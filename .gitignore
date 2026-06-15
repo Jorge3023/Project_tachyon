@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+ENV/
+
+# Variables de entorno
+.env
+.env.*
+
+# Bases de datos
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+
+# Reportes generados
+backend/reportes/
+
+# Archivos temporales
+*.tmp
+*.temp
+
+# React / Vite
+
+# Dependencias
+node_modules/
+
+# Compilaciones
+dist/
+build/
+
+# Cache
+.vite/
+.cache/
+
+# VS Code
+.vscode/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Respaldos
+*.bak
+*.old
+*.swp
+
+# PyInstaller
+*.spec
