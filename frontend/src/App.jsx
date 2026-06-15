@@ -20,7 +20,7 @@ function AppRoutes() {
   const { usuario } = useAuth()
   return (
     <Routes>
-      <Route path="/login" element={usuario ? <Navigate to="/dashboard" replace /> : <Login />} />
+      <Route path="/" element={usuario ? <Navigate to="/dashboard" replace /> : <Login />} />
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="/dashboard" element={
         <PrivateRoute>
