@@ -1,7 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import AppLayout from './components/AppLayout'
-import Login from './pages/Login'
+import Login from './pages/main'
 import Dashboard from './pages/Dashboard'
 import Archivos from './pages/Archivos'
 import { LineaPage, ReportesPage } from './pages/Placeholders'
@@ -13,15 +13,17 @@ function PrivateRoute({ children }) {
       <div className="w-6 h-6 border-2 border-brand-600 border-t-transparent rounded-full animate-spin" />
     </div>
   )
-  return usuario ? children : <Navigate to="/login" replace />
+  return usuario ? children : <Navigate to="/" replace />
 }
 
 function AppRoutes() {
   const { usuario } = useAuth()
   return (
     <Routes>
+      {/* Ruta Principal: Si está logueado va a Dashboard, si no, muestra Login */}
       <Route path="/" element={usuario ? <Navigate to="/dashboard" replace /> : <Login />} />
-      <Route path="/" element={<Navigate to="/dashboard" replace />} />
+
+      {/* Rutas Protegidas */}
       <Route path="/dashboard" element={
         <PrivateRoute>
           <AppLayout><Dashboard /></AppLayout>
@@ -42,6 +44,9 @@ function AppRoutes() {
           <AppLayout><LineaPage /></AppLayout>
         </PrivateRoute>
       } />
+
+      {/* Comodín: Cualquier otra ruta no definida redirige al inicio */}
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
 }
