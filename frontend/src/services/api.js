@@ -1,9 +1,12 @@
 import axios from 'axios'
 
+// --- MODIFICACIÓN AQUÍ ---
 const api = axios.create({
-  baseURL: '/api',
+  // Vite inyectará aquí tu URL de Render (ej. https://project-tachyon.onrender.com)
+  baseURL: import.meta.env.VITE_API_URL, 
   timeout: 30000,
 })
+// -------------------------
 
 api.interceptors.response.use(
   res => res,
