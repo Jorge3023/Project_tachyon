@@ -8,9 +8,20 @@ import jwt, bcrypt, sqlite3, json, os, io
 from excel_parser import procesar_excel
 
 app = FastAPI(title="ProduccionApp API")
-app.add_middleware(CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# --- MODIFICACIÓN AQUÍ ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Cambiado de localhost a "*" para permitir Render
+    allow_credentials=True, 
+    allow_methods=["*"], 
+    allow_headers=["*"]
+)
+
+@app.get("/")
+def read_root():
+    return {"estado": "En línea", "mensaje": "API de ProduccionApp funcionando correctamente en Render"}
+# -------------------------
 
 SECRET_KEY = "produccion-app-secret-2024"
 ALGORITHM  = "HS256"
