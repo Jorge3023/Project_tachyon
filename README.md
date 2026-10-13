@@ -168,3 +168,9 @@ Desarrollado como proyecto de gestión y monitoreo de producción
 |---|---|
 | `VITE_API_URL` | URL del backend. En desarrollo usa `http://localhost:8000` por defecto. |
 | `VITE_BASE` | Solo si se publica en una subcarpeta (ej. `/Project_tachyon/`). Normalmente vacío. |
+
+## Usuarios, privacidad y compartir
+
+- **Cuentas:** el administrador crea cuentas desde *Usuarios* (correo + contraseña temporal). En su primer ingreso, cada persona elige su **nombre de usuario** (único, de 3 a 20 caracteres, no se cambia después).
+- **Privacidad:** cada archivo (y lo que se calcula de él en el dashboard) es solo de quien lo subió. Ni el administrador ve los archivos de los demás.
+- **Compartir:** el dueño puede compartir un archivo por correo electrónico (solo lectura). Si la persona aún no tiene cuenta, lo verá cuando entre con ese correo. Se puede dejar de compartir en cualquier momento.

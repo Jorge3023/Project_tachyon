@@ -4,7 +4,8 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse
 from datetime import datetime, timedelta
 from typing import Optional, List
-import jwt, bcrypt, sqlite3, json, os, io, math, warnings
+import jwt, bcrypt, sqlite3, json, os, io, math, warnings, re
+from pydantic import BaseModel
 from excel_parser import procesar_excel
 
 app = FastAPI(title="ProduccionApp API")
@@ -55,6 +56,19 @@ def init_db():
         subido_por INTEGER, subido_en TEXT DEFAULT CURRENT_TIMESTAMP,
         reporte_json TEXT, resumen_json TEXT)""")
 
+    # Migraciones (bases creadas con versiones anteriores)
+    cols = [r[1] for r in cur.execute("PRAGMA table_info(usuarios)").fetchall()]
+    if "username" not in cols:
+        cur.execute("ALTER TABLE usuarios ADD COLUMN username TEXT")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_username "
+                "ON usuarios(lower(username)) WHERE username IS NOT NULL")
+    # Archivos compartidos con otras personas por correo (solo lectura)
+    cur.execute("""CREATE TABLE IF NOT EXISTS comparticiones (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        archivo_id INTEGER NOT NULL, correo TEXT NOT NULL,
+        compartido_por INTEGER, creado_en TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(archivo_id, correo))""")
+
     # Usuarios por defecto
     usuarios_default = [
         ("Administrador",  "admin@empresa.com",      "admin123",      "admin"),
@@ -100,33 +114,144 @@ def require_admin(usuario=Depends(get_usuario_actual)):
         raise HTTPException(status_code=403, detail="Solo administradores pueden realizar esta acción")
     return usuario
 
+def _usuario_publico(u):
+    """Datos del usuario que ve el frontend. 'nombre' = username si ya lo eligió."""
+    return {"id": u["id"], "nombre": u["username"] or u["nombre"], "username": u["username"],
+            "correo": u["correo"], "rol": u["rol"], "necesita_username": not u["username"]}
+
 @app.post("/auth/login")
 def login(form: OAuth2PasswordRequestForm = Depends()):
     conn = get_db()
-    u = conn.execute("SELECT * FROM usuarios WHERE correo=? AND activo=1", (form.username,)).fetchone()
+    u = conn.execute("SELECT * FROM usuarios WHERE lower(correo)=lower(?) AND activo=1",
+                     (form.username.strip(),)).fetchone()
     conn.close()
     if not u or not bcrypt.checkpw(form.password.encode(), u["password_hash"].encode()):
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
-    token = crear_token({"sub": u["correo"], "rol": u["rol"], "nombre": u["nombre"]})
-    return {"access_token": token, "token_type": "bearer",
-            "usuario": {"id": u["id"], "nombre": u["nombre"], "correo": u["correo"], "rol": u["rol"]}}
+    token = crear_token({"sub": u["correo"], "rol": u["rol"]})
+    return {"access_token": token, "token_type": "bearer", "usuario": _usuario_publico(u)}
 
 @app.get("/auth/me")
 def me(u=Depends(get_usuario_actual)):
-    return {k: u[k] for k in ("id","nombre","correo","rol")}
+    return _usuario_publico(u)
+
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_.]{3,20}$")
+
+class UsernameIn(BaseModel):
+    username: str
+
+@app.post("/auth/username")
+def elegir_username(datos: UsernameIn, u=Depends(get_usuario_actual)):
+    """Primer ingreso: el usuario elige su nombre de usuario (solo una vez)."""
+    if u["username"]:
+        raise HTTPException(status_code=409, detail="Ya elegiste tu nombre de usuario")
+    nombre = datos.username.strip()
+    if not USERNAME_RE.match(nombre):
+        raise HTTPException(status_code=422,
+            detail="Usa de 3 a 20 caracteres: letras, números, punto o guion bajo")
+    conn = get_db()
+    try:
+        existe = conn.execute("SELECT 1 FROM usuarios WHERE lower(username)=lower(?)", (nombre,)).fetchone()
+        if existe:
+            raise HTTPException(status_code=409, detail="Ese nombre de usuario ya está en uso")
+        conn.execute("UPDATE usuarios SET username=? WHERE id=?", (nombre, u["id"]))
+        conn.commit()
+        nuevo = conn.execute("SELECT * FROM usuarios WHERE id=?", (u["id"],)).fetchone()
+    finally:
+        conn.close()
+    return _usuario_publico(nuevo)
 
 # ── Archivos ───────────────────────────────────────────────────────────────────
+# ── Visibilidad: un archivo es visible para su dueño y para quienes lo compartieron por correo
+def _cond_visible(u, alias="a"):
+    return (f"({alias}.subido_por=? OR EXISTS (SELECT 1 FROM comparticiones c "
+            f"WHERE c.archivo_id={alias}.id AND c.correo=?))", [u["id"], u["correo"].lower()])
+
+def _archivo_con_acceso(conn, archivo_id, u):
+    """Devuelve el archivo si el usuario puede verlo; si no, 404 (no revela que exista)."""
+    cond, params = _cond_visible(u)
+    a = conn.execute(f"SELECT a.* FROM archivos a WHERE a.id=? AND {cond}", [archivo_id, *params]).fetchone()
+    if not a:
+        raise HTTPException(status_code=404, detail="Archivo no encontrado")
+    return a
+
+def _archivo_propio(conn, archivo_id, u):
+    a = conn.execute("SELECT * FROM archivos WHERE id=? AND subido_por=?", (archivo_id, u["id"])).fetchone()
+    if not a:
+        raise HTTPException(status_code=404, detail="Archivo no encontrado")
+    return a
+
 @app.get("/archivos")
-def listar_archivos(linea: Optional[str] = None, u=Depends(get_usuario_actual)):
+def listar_archivos(linea: Optional[str] = None, origen: str = "todos", u=Depends(get_usuario_actual)):
+    """origen: 'mios' | 'compartidos' | 'todos'."""
     conn = get_db()
-    q = """SELECT a.*, us.nombre as subido_por_nombre
-           FROM archivos a LEFT JOIN usuarios us ON a.subido_por=us.id"""
-    params = []
+    cond, params = _cond_visible(u)
+    q = f"""SELECT a.id, a.nombre, a.linea, a.equipo, a.filas, a.estado, a.subido_por, a.subido_en,
+                   COALESCE(us.username, us.nombre) AS subido_por_nombre,
+                   (a.subido_por=?) AS es_mio,
+                   (SELECT COUNT(*) FROM comparticiones c2 WHERE c2.archivo_id=a.id) AS num_compartidos
+            FROM archivos a LEFT JOIN usuarios us ON a.subido_por=us.id
+            WHERE {cond}"""
+    params = [u["id"], *params]
+    if origen == "mios":
+        q += " AND a.subido_por=?"; params.append(u["id"])
+    elif origen == "compartidos":
+        q += " AND a.subido_por<>?"; params.append(u["id"])
     if linea:
-        q += " WHERE a.linea=?"; params.append(linea)
+        q += " AND a.linea=?"; params.append(linea)
     q += " ORDER BY a.subido_en DESC LIMIT 50"
     rows = conn.execute(q, params).fetchall(); conn.close()
+    out = []
+    for r in rows:
+        d = dict(r); d["es_mio"] = bool(d["es_mio"])
+        if not d["es_mio"]: d["num_compartidos"] = None   # solo el dueño ve con cuántos se comparte
+        out.append(d)
+    return out
+
+# ── Compartir por correo (solo el dueño)
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+class CompartirIn(BaseModel):
+    correo: str
+
+@app.get("/archivos/{archivo_id}/comparticiones")
+def ver_comparticiones(archivo_id: int, u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        _archivo_propio(conn, archivo_id, u)
+        rows = conn.execute("SELECT correo, creado_en FROM comparticiones WHERE archivo_id=? ORDER BY creado_en",
+                            (archivo_id,)).fetchall()
+    finally:
+        conn.close()
     return [dict(r) for r in rows]
+
+@app.post("/archivos/{archivo_id}/comparticiones")
+def compartir_archivo(archivo_id: int, datos: CompartirIn, u=Depends(get_usuario_actual)):
+    correo = datos.correo.strip().lower()
+    if not EMAIL_RE.match(correo):
+        raise HTTPException(status_code=422, detail="Correo electrónico no válido")
+    if correo == u["correo"].lower():
+        raise HTTPException(status_code=422, detail="Ese archivo ya es tuyo")
+    conn = get_db()
+    try:
+        _archivo_propio(conn, archivo_id, u)
+        # No se revela si el correo tiene cuenta: quien se registre con él verá el archivo.
+        conn.execute("INSERT OR IGNORE INTO comparticiones (archivo_id, correo, compartido_por) VALUES (?,?,?)",
+                     (archivo_id, correo, u["id"]))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"mensaje": f"Compartido con {correo}", "correo": correo}
+
+@app.delete("/archivos/{archivo_id}/comparticiones/{correo}")
+def dejar_de_compartir(archivo_id: int, correo: str, u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        _archivo_propio(conn, archivo_id, u)
+        conn.execute("DELETE FROM comparticiones WHERE archivo_id=? AND correo=?", (archivo_id, correo.strip().lower()))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"mensaje": "Se dejó de compartir"}
 
 @app.post("/archivos/upload")
 async def upload_archivo(
@@ -135,10 +260,6 @@ async def upload_archivo(
     password_confirmacion: str = Query(default=""),
     u=Depends(get_usuario_actual)
 ):
-    # Solo admins pueden cargar
-    if u["rol"] != "admin":
-        raise HTTPException(status_code=403, detail="Solo administradores pueden cargar archivos")
-
     # Verificar contraseña de confirmación
     conn = get_db()
     usuario_db = conn.execute("SELECT password_hash FROM usuarios WHERE id=?", (u["id"],)).fetchone()
@@ -192,12 +313,14 @@ async def upload_archivo(
 
 @app.get("/archivos/{archivo_id}/descargar")
 def descargar(archivo_id: int, u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        a = _archivo_con_acceso(conn, archivo_id, u)
+    finally:
+        conn.close()
     ruta = f"reportes/{archivo_id}_reporte.xlsx"
     if not os.path.exists(ruta):
         raise HTTPException(status_code=404, detail="Reporte no encontrado")
-    conn = get_db()
-    a = conn.execute("SELECT nombre FROM archivos WHERE id=?", (archivo_id,)).fetchone()
-    conn.close()
     nombre = (a["nombre"].rsplit(".", 1)[0] if a else f"reporte_{archivo_id}") + "_analisis.xlsx"
     with open(ruta, "rb") as f: data = f.read()
     return StreamingResponse(io.BytesIO(data),
@@ -207,21 +330,24 @@ def descargar(archivo_id: int, u=Depends(get_usuario_actual)):
 @app.get("/archivos/{archivo_id}/reporte")
 def ver_reporte(archivo_id: int, u=Depends(get_usuario_actual)):
     conn = get_db()
-    row = conn.execute("SELECT reporte_json,resumen_json FROM archivos WHERE id=?", (archivo_id,)).fetchone()
-    conn.close()
-    if not row or not row["reporte_json"]:
+    try:
+        row = _archivo_con_acceso(conn, archivo_id, u)
+    finally:
+        conn.close()
+    if not row["reporte_json"]:
         raise HTTPException(status_code=404, detail="Reporte no disponible")
     return {"reporte": json.loads(row["reporte_json"]),
             "resumen": json.loads(row["resumen_json"]) if row["resumen_json"] else {}}
 
 @app.delete("/archivos/{archivo_id}")
-def eliminar_archivo(archivo_id: int, u=Depends(require_admin)):
+def eliminar_archivo(archivo_id: int, u=Depends(get_usuario_actual)):
     conn = get_db()
-    archivo = conn.execute("SELECT id FROM archivos WHERE id=?", (archivo_id,)).fetchone()
-    if not archivo:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Archivo no encontrado")
+    try:
+        _archivo_propio(conn, archivo_id, u)
+    except HTTPException:
+        conn.close(); raise
 
+    conn.execute("DELETE FROM comparticiones WHERE archivo_id=?", (archivo_id,))
     conn.execute("DELETE FROM archivos WHERE id=?", (archivo_id,))
     conn.commit()
     conn.close()
@@ -247,12 +373,12 @@ def _limpiar_registros(registros):
     """Reemplaza NaN/inf por None en una lista de dicts (salida de DataFrame.to_dict)."""
     return [{k: (_num(v) if isinstance(v, float) else v) for k, v in r.items()} for r in registros]
 
-def _get_todos_reportes(linea: Optional[str] = None):
-    """Carga y une todos los reportes procesados de la DB."""
+def _get_todos_reportes(linea: Optional[str], u):
+    """Carga y une los reportes procesados que el usuario puede ver (suyos + compartidos con él)."""
     import pandas as pd
     conn = get_db()
-    q = "SELECT reporte_json, linea FROM archivos WHERE estado='procesado' AND reporte_json IS NOT NULL"
-    params = []
+    cond, params = _cond_visible(u, "archivos")
+    q = f"SELECT reporte_json, linea FROM archivos WHERE estado='procesado' AND reporte_json IS NOT NULL AND {cond}"
     if linea:
         q += " AND linea=?"; params.append(linea)
     rows = conn.execute(q, params).fetchall(); conn.close()
@@ -270,7 +396,7 @@ def _get_todos_reportes(linea: Optional[str] = None):
 @app.get("/dashboard/resumen")
 def resumen_dashboard(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_usuario_actual)):
     import pandas as pd
-    df = _get_todos_reportes(linea)
+    df = _get_todos_reportes(linea, u)
     if df.empty:
         return {"unidades": 0, "rechazos": 0, "eficiencia": 0,
                 "tiempo_paro": 0, "horas_reales": 0, "fuente": "sin_datos"}
@@ -283,7 +409,7 @@ def resumen_dashboard(periodo: str = "dia", linea: Optional[str] = None, u=Depen
 
     if df.empty:
         # Devolver todos si no hay del periodo (datos de prueba pueden ser de otro día)
-        df = _get_todos_reportes(linea)
+        df = _get_todos_reportes(linea, u)
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
 
     return {
@@ -298,7 +424,7 @@ def resumen_dashboard(periodo: str = "dia", linea: Optional[str] = None, u=Depen
 @app.get("/dashboard/por-modelo")
 def por_modelo(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_usuario_actual)):
     import pandas as pd
-    df = _get_todos_reportes(linea)
+    df = _get_todos_reportes(linea, u)
     if df.empty: return []
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     hoy = pd.Timestamp.now().normalize()
@@ -318,7 +444,7 @@ def por_modelo(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_
 @app.get("/dashboard/por-linea")
 def por_linea(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_usuario_actual)):
     import pandas as pd
-    df = _get_todos_reportes(linea)
+    df = _get_todos_reportes(linea, u)
     if df.empty: return []
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     hoy = pd.Timestamp.now().normalize()
@@ -338,7 +464,7 @@ def por_linea(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_u
 @app.get("/dashboard/tendencia")
 def tendencia(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_usuario_actual)):
     import pandas as pd
-    df = _get_todos_reportes(linea)
+    df = _get_todos_reportes(linea, u)
     if df.empty: return []
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     hoy = pd.Timestamp.now().normalize()
@@ -357,7 +483,7 @@ def tendencia(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_u
 @app.get("/dashboard/rendimiento-lineas")
 def rendimiento_lineas(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_usuario_actual)):
     import pandas as pd
-    df = _get_todos_reportes(linea)
+    df = _get_todos_reportes(linea, u)
     if df.empty: return []
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     hoy = pd.Timestamp.now().normalize()
@@ -378,9 +504,54 @@ def rendimiento_lineas(periodo: str = "dia", linea: Optional[str] = None, u=Depe
 @app.get("/usuarios")
 def listar_usuarios(u=Depends(require_admin)):
     conn = get_db()
-    rows = conn.execute("SELECT id,nombre,correo,rol,activo,creado_en FROM usuarios").fetchall()
+    rows = conn.execute("SELECT id,nombre,username,correo,rol,activo,creado_en FROM usuarios ORDER BY id").fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return [{**dict(r), "pendiente_username": not r["username"]} for r in rows]
+
+class UsuarioNuevo(BaseModel):
+    correo: str
+    password: str
+    rol: str = "operador"
+
+@app.post("/usuarios")
+def crear_usuario(datos: UsuarioNuevo, u=Depends(require_admin)):
+    """El admin crea la cuenta con correo y contraseña; el usuario elegirá su username al entrar."""
+    correo = datos.correo.strip().lower()
+    if not EMAIL_RE.match(correo):
+        raise HTTPException(status_code=422, detail="Correo electrónico no válido")
+    if len(datos.password) < 8:
+        raise HTTPException(status_code=422, detail="La contraseña debe tener al menos 8 caracteres")
+    if datos.rol not in ("admin", "operador"):
+        raise HTTPException(status_code=422, detail="Rol no válido")
+    ph = bcrypt.hashpw(datos.password.encode(), bcrypt.gensalt()).decode()
+    conn = get_db()
+    try:
+        if conn.execute("SELECT 1 FROM usuarios WHERE lower(correo)=?", (correo,)).fetchone():
+            raise HTTPException(status_code=409, detail="Ya existe un usuario con ese correo")
+        cur = conn.execute("INSERT INTO usuarios (nombre,correo,password_hash,rol) VALUES (?,?,?,?)",
+                           (correo.split("@")[0], correo, ph, datos.rol))
+        conn.commit()
+        nuevo_id = cur.lastrowid
+    finally:
+        conn.close()
+    return {"id": nuevo_id, "correo": correo, "rol": datos.rol, "pendiente_username": True}
+
+class ActivoIn(BaseModel):
+    activo: bool
+
+@app.patch("/usuarios/{usuario_id}")
+def activar_usuario(usuario_id: int, datos: ActivoIn, u=Depends(require_admin)):
+    if usuario_id == u["id"] and not datos.activo:
+        raise HTTPException(status_code=422, detail="No puedes desactivar tu propia cuenta")
+    conn = get_db()
+    try:
+        if not conn.execute("SELECT 1 FROM usuarios WHERE id=?", (usuario_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        conn.execute("UPDATE usuarios SET activo=? WHERE id=?", (1 if datos.activo else 0, usuario_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": usuario_id, "activo": datos.activo}
 
 init_db()
 if __name__ == "__main__":

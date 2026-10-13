@@ -13,9 +13,9 @@ api.interceptors.response.use(
     const url = err.config?.url || ''
     const status = err.response?.status
 
-    // Solo desloguear si es 401 Y NO es el endpoint de upload
-    // (el upload puede devolver 401 por contraseña incorrecta, no por sesión)
-    if (status === 401 && !url.includes('/archivos/upload')) {
+    // Solo desloguear si es 401 Y NO es upload ni login
+    // (esos pueden devolver 401 por contraseña incorrecta, no por sesión vencida)
+    if (status === 401 && !url.includes('/archivos/upload') && !url.includes('/auth/login')) {
       localStorage.removeItem('token')
       window.location.href = import.meta.env.BASE_URL
     }
