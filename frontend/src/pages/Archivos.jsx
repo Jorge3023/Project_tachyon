@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { useAuth } from '../context/AuthContext'
 import api from '../services/api'
+import ModalCompartir from '../components/ModalCompartir'
 
 const LINEAS = ['A', 'B', 'C', 'D', 'E']
 
@@ -115,10 +115,9 @@ function ResumenCard({ resumen }) {
 }
 
 export default function Archivos() {
-  const { usuario } = useAuth()
-  const esAdmin     = usuario?.rol === 'admin'
-
   const [archivos,      setArchivos]      = useState([])
+  const [origen,        setOrigen]        = useState('todos')   // todos | mios | compartidos
+  const [compartiendo,  setCompartiendo]  = useState(null)      // archivo cuyo modal de compartir está abierto
   const [linea,         setLinea]         = useState('A')
   const [archivoSel,    setArchivoSel]    = useState(null)   // archivo pendiente de confirmación
   const [subiendo,      setSubiendo]      = useState(false)
@@ -128,9 +127,9 @@ export default function Archivos() {
   const inputRef = useRef()
 
   const cargarLista = () =>
-    api.get('/archivos').then(r => setArchivos(r.data)).catch(() => {})
+    api.get(`/archivos?origen=${origen}`).then(r => setArchivos(r.data)).catch(() => {})
 
-  useEffect(() => { cargarLista() }, [])
+  useEffect(() => { cargarLista() }, [origen])
 
   /* El input dispara esto → guardamos el File y mostramos el modal */
   const handleFileSeleccionado = (e) => {
@@ -202,20 +201,27 @@ const handleConfirmar = async (password, fileDirecto = null) => {
         />
       )}
 
+      {compartiendo && (
+        <ModalCompartir
+          archivo={compartiendo}
+          onCerrar={() => setCompartiendo(null)}
+          onCambio={cargarLista}
+        />
+      )}
+
       <div className="flex-1 flex flex-col overflow-hidden">
         <header className="bg-white border-b border-gray-100 px-6 py-4">
           <h1 className="text-base font-semibold text-gray-900">Archivos de producción</h1>
           <p className="text-xs text-gray-400 mt-0.5">
-            {esAdmin
-              ? 'Carga reportes crudos — la app calcula horas, piezas y tiempo muerto'
-              : 'Visualiza y descarga los reportes de análisis'}
+            Tus archivos son privados: solo tú los ves, salvo que los compartas por correo.
           </p>
         </header>
 
         <main className="flex-1 overflow-y-auto p-6 space-y-5">
 
-          {/* ── Zona de carga (solo admin) ── */}
-          {esAdmin && (
+          {/* ── Zona de carga ── */}
+          {(
+
             <div className="card">
               <h2 className="text-sm font-semibold text-gray-900 mb-4">Cargar nuevo archivo</h2>
 
@@ -271,9 +277,15 @@ const handleConfirmar = async (password, fileDirecto = null) => {
           {/* ── Historial ── */}
           <div className="card">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold text-gray-900">
-                {esAdmin ? 'Historial de archivos' : 'Reportes disponibles'}
-              </h2>
+              <div className="flex bg-gray-100 rounded-lg p-0.5">
+                {[['todos','Todos'],['mios','Mis archivos'],['compartidos','Compartidos conmigo']].map(([k, label]) => (
+                  <button key={k} onClick={() => setOrigen(k)}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-150 ` +
+                      (origen === k ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700')}>
+                    {label}
+                  </button>
+                ))}
+              </div>
               <button onClick={cargarLista} className="btn-ghost text-xs">
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -290,7 +302,7 @@ const handleConfirmar = async (password, fileDirecto = null) => {
                     d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                 </svg>
                 <p className="text-sm">
-                  {esAdmin ? 'Aún no hay archivos cargados' : 'No hay reportes disponibles aún'}
+                  {origen === 'compartidos' ? 'Nadie ha compartido archivos contigo todavía' : 'Aún no hay archivos cargados'}
                 </p>
               </div>
             ) : (
@@ -309,12 +321,27 @@ const handleConfirmar = async (password, fileDirecto = null) => {
                         Línea {a.linea}
                         {a.equipo ? ` · ${a.equipo}` : ''}
                         {` · ${a.filas?.toLocaleString() ?? 0} registros`}
-                        {a.subido_por_nombre ? ` · ${a.subido_por_nombre}` : ''}
+                        {a.es_mio ? '' : ` · compartido por ${a.subido_por_nombre || 'otro usuario'}`}
                         {` · ${new Date(a.subido_en).toLocaleDateString('es-MX')}`}
                       </p>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
+                      {a.es_mio && a.num_compartidos > 0 && (
+                        <span className="text-xs text-gray-400" title="Personas con acceso">
+                          {a.num_compartidos} {a.num_compartidos === 1 ? 'persona' : 'personas'}
+                        </span>
+                      )}
                       <EstadoBadge estado={a.estado} />
+                      {a.es_mio && a.estado === 'procesado' && (
+                        <button onClick={() => setCompartiendo(a)}
+                          className="btn-ghost text-xs" title="Compartir por correo">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                              d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                          </svg>
+                          Compartir
+                        </button>
+                      )}
                       {a.estado === 'procesado' && (
                         <button onClick={() => handleDescargar(a)}
                           disabled={descargando === a.id}

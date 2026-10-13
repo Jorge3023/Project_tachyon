@@ -11,7 +11,6 @@ export function LineaPage() {
 
 export function ReportesPage() {
   const { usuario } = useAuth()
-  const esAdmin = usuario?.rol === 'admin'
   const [searchParams] = useSearchParams()
   const linea = (searchParams.get('linea') || '').toUpperCase()
 
@@ -144,7 +143,7 @@ export function ReportesPage() {
                       >
                         {descargandoId === a.id ? 'Descargando…' : 'Descargar'}
                       </button>
-                      {esAdmin && (
+                      {a.es_mio && (
                         <button
                           onClick={() => eliminarArchivo(a)}
                           disabled={eliminandoId === a.id}
