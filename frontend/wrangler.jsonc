@@ -1,0 +1,12 @@
+{
+  // Configuración de Cloudflare (Workers con assets estáticos) para el frontend.
+  // Build:   npm run build
+  // Deploy:  npx wrangler deploy
+  "name": "project-tachyon",
+  "compatibility_date": "2025-01-01",
+  "assets": {
+    "directory": "./dist",
+    // Las rutas de React Router (/dashboard, /archivos...) devuelven index.html
+    "not_found_handling": "single-page-application"
+  }
+}
