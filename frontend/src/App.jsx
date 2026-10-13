@@ -1,7 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import AppLayout from './components/AppLayout'
-import Login from './pages/main'
+import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Archivos from './pages/Archivos'
 import { LineaPage, ReportesPage } from './pages/Placeholders'
@@ -53,7 +53,7 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
       <AuthProvider>
         <AppRoutes />
       </AuthProvider>

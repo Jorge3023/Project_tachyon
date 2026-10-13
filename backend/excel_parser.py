@@ -234,6 +234,14 @@ def consolidar_reporte(bloques: pd.DataFrame) -> pd.DataFrame:
 # Exportar Excel de reporte
 # ---------------------------------------------------------------------------
 
+def _escribir(ws, fila, col, val, fmt):
+    """Escribe una celda; los NaN/NaT (p. ej. eficiencia con 0 horas) quedan en blanco."""
+    if pd.isna(val):
+        ws.write_blank(fila, col, None, fmt)
+    else:
+        ws.write(fila, col, val, fmt)
+
+
 def exportar_excel(reporte: pd.DataFrame, bloques: pd.DataFrame) -> bytes:
     """
     Genera un Excel con 2 hojas:
@@ -285,7 +293,7 @@ def exportar_excel(reporte: pd.DataFrame, bloques: pd.DataFrame) -> bytes:
             for col_idx, (col_key, (_, _, fmt)) in enumerate(cols_resumen.items()):
                 if col_key in resumen_export.columns:
                     val = resumen_export.iloc[row_idx][col_key]
-                    ws_res.write(row_idx + 2, col_idx, val, fmt)
+                    _escribir(ws_res, row_idx + 2, col_idx, val, fmt)
 
         ws_res.freeze_panes(2, 0)
         ws_res.autofilter(1, 0, len(resumen_export) + 1, len(cols_resumen) - 1)
@@ -320,7 +328,7 @@ def exportar_excel(reporte: pd.DataFrame, bloques: pd.DataFrame) -> bytes:
             for col_idx, (col_key, (_, _, fmt)) in enumerate(cols_detalle.items()):
                 if col_key in detalle_export.columns:
                     val = detalle_export.iloc[row_idx][col_key]
-                    ws_det.write(row_idx + 2, col_idx, val, fmt)
+                    _escribir(ws_det, row_idx + 2, col_idx, val, fmt)
 
         ws_det.freeze_panes(2, 0)
         ws_det.autofilter(1, 0, len(detalle_export) + 1, len(cols_detalle) - 1)
