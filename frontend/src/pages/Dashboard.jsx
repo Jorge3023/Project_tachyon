@@ -34,7 +34,7 @@ function MetricCard({ label, value, sub, color = 'gray', icon }) {
   )
 }
 
-function SinDatos({ onCargar, esAdmin }) {
+function SinDatos({ onCargar, puedeCargar }) {
   return (
     <div className="flex flex-col items-center justify-center h-48 text-center">
       <div className="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center mb-3">
@@ -44,7 +44,7 @@ function SinDatos({ onCargar, esAdmin }) {
         </svg>
       </div>
       <p className="text-sm text-gray-400 mb-3">Sin datos para este periodo</p>
-      {esAdmin && (
+      {puedeCargar && (
         <button onClick={onCargar} className="btn-primary text-xs py-1.5">
           Cargar archivo Excel
         </button>
@@ -56,7 +56,7 @@ function SinDatos({ onCargar, esAdmin }) {
 export default function Dashboard({ lineaFija = null }) {
   const { usuario } = useAuth()
   const navigate    = useNavigate()
-  const esAdmin     = usuario?.rol === 'admin'
+  const puedeCargar = true   // cada usuario carga y ve sus propios archivos
   const lineaBloqueada = lineaFija ? String(lineaFija).toUpperCase() : null
 
   const [periodo,   setPeriodo]   = useState('dia')
@@ -138,7 +138,7 @@ export default function Dashboard({ lineaFija = null }) {
             ))}
           </div>
 
-          {esAdmin && (
+          {puedeCargar && (
             <>
               {lineaActiva !== 'Todas' && (
                 <button
@@ -198,7 +198,7 @@ export default function Dashboard({ lineaFija = null }) {
             <h2 className="text-sm font-semibold text-gray-900 mb-1">Producción por modelo</h2>
             <p className="text-xs text-gray-400 mb-4">Top 10 — piezas conformes vs no conformes</p>
             {modelos.length === 0
-              ? <SinDatos onCargar={() => navigate('/archivos')} esAdmin={esAdmin} />
+              ? <SinDatos onCargar={() => navigate('/archivos')} puedeCargar={puedeCargar} />
               : (
                 <ResponsiveContainer width="100%" height={210}>
                   <BarChart data={modelos} layout="vertical" margin={{ top: 0, right: 20, left: 10, bottom: 0 }}>
@@ -221,7 +221,7 @@ export default function Dashboard({ lineaFija = null }) {
             <h2 className="text-sm font-semibold text-gray-900 mb-1">Eficiencia por línea</h2>
             <p className="text-xs text-gray-400 mb-4">% promedio (tiempo efectivo / tiempo de ciclo)</p>
             {rendLineas.length === 0
-              ? <SinDatos onCargar={() => navigate('/archivos')} esAdmin={esAdmin} />
+              ? <SinDatos onCargar={() => navigate('/archivos')} puedeCargar={puedeCargar} />
               : (
                 <ResponsiveContainer width="100%" height={210}>
                   <BarChart data={rendLineas} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
@@ -249,7 +249,7 @@ export default function Dashboard({ lineaFija = null }) {
             <h2 className="text-sm font-semibold text-gray-900 mb-1">Tendencia histórica</h2>
             <p className="text-xs text-gray-400 mb-4">Piezas conformes y no conformes por fecha</p>
             {tendencia.length === 0
-              ? <SinDatos onCargar={() => navigate('/archivos')} esAdmin={esAdmin} />
+              ? <SinDatos onCargar={() => navigate('/archivos')} puedeCargar={puedeCargar} />
               : (
                 <ResponsiveContainer width="100%" height={180}>
                   <LineChart data={tendencia} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
@@ -271,7 +271,7 @@ export default function Dashboard({ lineaFija = null }) {
           <div className="card">
             <h2 className="text-sm font-semibold text-gray-900 mb-4">Resumen por línea</h2>
             {porLinea.length === 0
-              ? <SinDatos onCargar={() => navigate('/archivos')} esAdmin={esAdmin} />
+              ? <SinDatos onCargar={() => navigate('/archivos')} puedeCargar={puedeCargar} />
               : (
                 <div className="space-y-2">
                   {porLinea.map((l, i) => (

@@ -17,8 +17,10 @@ export default function Login() {
     try {
       await login(correo, password)
       navigate('/dashboard')
-    } catch {
-      setError('Correo o contraseña incorrectos')
+    } catch (err) {
+      if (err.response?.status === 401) setError('Correo o contraseña incorrectos')
+      else if (!err.response) setError('No se pudo conectar con el servidor. Si lleva un rato sin usarse, puede tardar hasta 1 minuto en despertar: espera e intenta de nuevo.')
+      else setError('Ocurrió un error en el servidor. Intenta de nuevo en unos momentos.')
     } finally {
       setCargando(false)
     }
