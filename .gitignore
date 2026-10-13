@@ -13,6 +13,7 @@ ENV/
 .env
 .env.*
 !.env.example
+!.env.production
 
 # Bases de datos
 *.db
