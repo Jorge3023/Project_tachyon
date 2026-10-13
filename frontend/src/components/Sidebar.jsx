@@ -66,6 +66,35 @@ export default function Sidebar() {
           </NavLink>
         ))}
 
+        <NavLink
+          to="/archivos"
+          className={({ isActive }) =>
+            `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors duration-100 ` +
+            (isActive ? 'bg-brand-50 text-brand-700 font-medium' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50')
+          }
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          Mis archivos
+        </NavLink>
+        {usuario?.rol === 'admin' && (
+          <NavLink
+            to="/usuarios"
+            className={({ isActive }) =>
+              `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors duration-100 ` +
+              (isActive ? 'bg-brand-50 text-brand-700 font-medium' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50')
+            }
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+            Usuarios
+          </NavLink>
+        )}
+
         <p className="text-xs text-gray-400 px-2 pt-4 pb-2 uppercase tracking-wider">Líneas</p>
         {lineas.map(l => (
           <NavLink
