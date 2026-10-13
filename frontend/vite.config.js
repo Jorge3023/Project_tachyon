@@ -1,8 +1,9 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// https://vitejs.dev/config/
+// VITE_BASE solo hace falta si publicas en una subcarpeta (ej. GitHub Pages: /Project_tachyon/).
+// En Cloudflare Pages / Render / dominio propio se deja en '/'.
 export default defineConfig({
   plugins: [react()],
-  base: '/', // 👈 Asegúrate de que tenga SOLO una diagonal '/'
+  base: process.env.VITE_BASE || '/',
 })

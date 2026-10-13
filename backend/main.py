@@ -4,26 +4,33 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse
 from datetime import datetime, timedelta
 from typing import Optional, List
-import jwt, bcrypt, sqlite3, json, os, io
+import jwt, bcrypt, sqlite3, json, os, io, math, warnings
 from excel_parser import procesar_excel
 
 app = FastAPI(title="ProduccionApp API")
 
-# --- MODIFICACIÓN AQUÍ ---
+# CORS: en producción define ALLOWED_ORIGINS con la(s) URL(s) del frontend, separadas por coma
+# (ej. "https://tachyon.pages.dev"). Sin definirla se permite cualquier origen (solo para desarrollo).
+# La autenticación va en el header Authorization (JWT), así que no se necesitan cookies/credenciales.
+_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Cambiado de localhost a "*" para permitir Render
-    allow_credentials=True, 
-    allow_methods=["*"], 
-    allow_headers=["*"]
+    allow_origins=_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 @app.get("/")
 def read_root():
     return {"estado": "En línea", "mensaje": "API de ProduccionApp funcionando correctamente en Render"}
-# -------------------------
 
-SECRET_KEY = "REDACTADO"
+# SECRET_KEY: define la variable de entorno SECRET_KEY en producción (>= 32 caracteres).
+# Si no existe se usa una clave de desarrollo y se avisa en consola.
+SECRET_KEY = os.getenv("SECRET_KEY", "")
+if not SECRET_KEY:
+    SECRET_KEY = "clave-solo-para-desarrollo-no-usar-en-produccion-0000"
+    warnings.warn("SECRET_KEY no definida: usando clave de desarrollo. Defínela en producción.")
 ALGORITHM  = "HS256"
 TOKEN_HOURS = 8
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
@@ -55,10 +62,16 @@ def init_db():
         ("María Rodríguez","mrodriguez@empresa.com", "operador123",   "operador"),
         ("Carlos Méndez",  "cmendez@empresa.com",    "operador123",   "operador"),
     ]
-    for nombre, correo, pw, rol in usuarios_default:
-        ph = bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
+    # En producción: SEED_DEMO_USERS=0 y define ADMIN_EMAIL + ADMIN_PASSWORD para crear tu administrador.
+    if os.getenv("SEED_DEMO_USERS", "1") != "0":
+        for nombre, correo, pw, rol in usuarios_default:
+            ph = bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
+            cur.execute("INSERT OR IGNORE INTO usuarios (nombre,correo,password_hash,rol) VALUES (?,?,?,?)",
+                        (nombre, correo, ph, rol))
+    if os.getenv("ADMIN_EMAIL") and os.getenv("ADMIN_PASSWORD"):
+        ph = bcrypt.hashpw(os.environ["ADMIN_PASSWORD"].encode(), bcrypt.gensalt()).decode()
         cur.execute("INSERT OR IGNORE INTO usuarios (nombre,correo,password_hash,rol) VALUES (?,?,?,?)",
-                    (nombre, correo, ph, rol))
+                    ("Administrador", os.environ["ADMIN_EMAIL"], ph, "admin"))
     conn.commit(); conn.close()
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
@@ -220,6 +233,20 @@ def eliminar_archivo(archivo_id: int, u=Depends(require_admin)):
     return {"mensaje": "Archivo eliminado correctamente", "archivo_id": archivo_id}
 
 # ── Dashboard — datos reales de archivos procesados ───────────────────────────
+def _num(x, nd=None):
+    """Convierte a número JSON-seguro: NaN/inf/None -> None (JSON no admite NaN)."""
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(x) or math.isinf(x):
+        return None
+    return round(x, nd) if nd is not None else x
+
+def _limpiar_registros(registros):
+    """Reemplaza NaN/inf por None en una lista de dicts (salida de DataFrame.to_dict)."""
+    return [{k: (_num(v) if isinstance(v, float) else v) for k, v in r.items()} for r in registros]
+
 def _get_todos_reportes(linea: Optional[str] = None):
     """Carga y une todos los reportes procesados de la DB."""
     import pandas as pd
@@ -262,7 +289,7 @@ def resumen_dashboard(periodo: str = "dia", linea: Optional[str] = None, u=Depen
     return {
         "unidades":     int(df["qty_passed"].sum()),
         "rechazos":     int(df["qty_failed"].sum()),
-        "eficiencia":   round(float(df["rendimiento_%"].mean()), 1) if "rendimiento_%" in df else 0,
+        "eficiencia":   _num(df["rendimiento_%"].mean(), 1) or 0 if "rendimiento_%" in df else 0,
         "tiempo_paro":  round(float(df["horas_muertas"].sum()), 2),
         "horas_reales": round(float(df["horas_reales"].sum()), 2),
         "fuente":       "real",
@@ -286,7 +313,7 @@ def por_modelo(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_
                   horas_muertas=("horas_muertas","sum"))
              .sort_values("qty_passed", ascending=False)
              .head(10))
-    return res.to_dict(orient="records")
+    return _limpiar_registros(res.to_dict(orient="records"))
 
 @app.get("/dashboard/por-linea")
 def por_linea(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_usuario_actual)):
@@ -306,7 +333,7 @@ def por_linea(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_u
                   horas_muertas=("horas_muertas","sum"),
                   rendimiento=("rendimiento_%","mean"))
              .sort_values("linea"))
-    return res.to_dict(orient="records")
+    return _limpiar_registros(res.to_dict(orient="records"))
 
 @app.get("/dashboard/tendencia")
 def tendencia(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_usuario_actual)):
@@ -325,7 +352,7 @@ def tendencia(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_u
                   qty_failed=("qty_failed","sum"),
                   horas_reales=("horas_reales","sum"))
              .sort_values("fecha"))
-    return res.to_dict(orient="records")
+    return _limpiar_registros(res.to_dict(orient="records"))
 
 @app.get("/dashboard/rendimiento-lineas")
 def rendimiento_lineas(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_usuario_actual)):
@@ -343,8 +370,8 @@ def rendimiento_lineas(periodo: str = "dia", linea: Optional[str] = None, u=Depe
                   horas_muertas=("horas_muertas","sum"),
                   qty_passed=("qty_passed","sum")))
     return [{"linea": r["linea"],
-             "rendimiento": round(r["rendimiento"], 1),
-             "horas_muertas": round(r["horas_muertas"], 2),
+             "rendimiento": _num(r["rendimiento"], 1),
+             "horas_muertas": _num(r["horas_muertas"], 2),
              "qty_passed": int(r["qty_passed"])} for _, r in res.iterrows()]
 
 # ── Usuarios ───────────────────────────────────────────────────────────────────

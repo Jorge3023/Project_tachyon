@@ -81,12 +81,14 @@ export default function Login() {
           Acceso restringido — solo personal autorizado
         </p>
 
-        {/* Hint de credenciales para desarrollo */}
+        {/* Hint de credenciales: solo en desarrollo, nunca en producción */}
+        {import.meta.env.DEV && (
         <div className="mt-4 p-3 bg-brand-50 rounded-lg text-xs text-brand-700 space-y-1">
           <p className="font-medium">Cuentas de prueba:</p>
           <p>admin@empresa.com / admin123</p>
           <p>jlopez@empresa.com / supervisor123</p>
         </div>
+        )}
       </div>
     </div>
   )

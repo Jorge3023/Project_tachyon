@@ -150,3 +150,21 @@ Desarrollado como proyecto de gestión y monitoreo de producción
 ## Módulo de Carga de Excel
 
 ![Archivos](images/archivos.png)
+
+## Variables de entorno
+
+**Backend (Render u otro host)**
+
+| Variable | Para qué sirve |
+|---|---|
+| `SECRET_KEY` | Clave para firmar los tokens JWT (mínimo 32 caracteres). **Obligatoria en producción.** |
+| `ALLOWED_ORIGINS` | URL(s) del frontend permitidas por CORS, separadas por coma. Ej: `https://tachyon.pages.dev` |
+| `SEED_DEMO_USERS` | `0` para no crear los usuarios de demostración (por defecto se crean). |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Si se definen, crean el usuario administrador inicial. |
+
+**Frontend (build)**
+
+| Variable | Para qué sirve |
+|---|---|
+| `VITE_API_URL` | URL del backend. En desarrollo usa `http://localhost:8000` por defecto. |
+| `VITE_BASE` | Solo si se publica en una subcarpeta (ej. `/Project_tachyon/`). Normalmente vacío. |
