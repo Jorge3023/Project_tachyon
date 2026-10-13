@@ -1,12 +1,11 @@
 import axios from 'axios'
 
-// --- MODIFICACIÓN AQUÍ ---
+// URL del backend: define VITE_API_URL en el build (ver frontend/.env.example).
+// En desarrollo (npm run dev) usa http://localhost:8000 si no la defines.
 const api = axios.create({
-  // Vite inyectará aquí tu URL de Render (ej. https://project-tachyon.onrender.com)
-  baseURL: import.meta.env.VITE_API_URL, 
+  baseURL: import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : ''),
   timeout: 30000,
 })
-// -------------------------
 
 api.interceptors.response.use(
   res => res,
@@ -18,7 +17,7 @@ api.interceptors.response.use(
     // (el upload puede devolver 401 por contraseña incorrecta, no por sesión)
     if (status === 401 && !url.includes('/archivos/upload')) {
       localStorage.removeItem('token')
-      window.location.href = '/login'
+      window.location.href = import.meta.env.BASE_URL
     }
 
     return Promise.reject(err)
