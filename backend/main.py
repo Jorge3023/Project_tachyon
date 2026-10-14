@@ -7,6 +7,7 @@ from typing import Optional, List
 import jwt, bcrypt, sqlite3, json, os, io, math, warnings, re
 from pydantic import BaseModel
 from excel_parser import procesar_excel
+import detector
 
 app = FastAPI(title="ProduccionApp API")
 
@@ -62,6 +63,16 @@ def init_db():
         cur.execute("ALTER TABLE usuarios ADD COLUMN username TEXT")
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_username "
                 "ON usuarios(lower(username)) WHERE username IS NOT NULL")
+    # Archivos genéricos (cualquier Excel/CSV): tipo, esquema de columnas confirmado y huella de columnas
+    cols_a = [r[1] for r in cur.execute("PRAGMA table_info(archivos)").fetchall()]
+    for nueva, ddl in (("tipo", "TEXT DEFAULT 'produccion'"), ("esquema_json", "TEXT"), ("huella", "TEXT")):
+        if nueva not in cols_a:
+            cur.execute(f"ALTER TABLE archivos ADD COLUMN {nueva} {ddl}")
+    cur.execute("""CREATE TABLE IF NOT EXISTS plantillas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_id INTEGER NOT NULL, nombre TEXT NOT NULL, huella TEXT NOT NULL,
+        config_json TEXT NOT NULL, creado_en TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(owner_id, huella))""")
     # Archivos compartidos con otras personas por correo (solo lectura)
     cur.execute("""CREATE TABLE IF NOT EXISTS comparticiones (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -185,12 +196,12 @@ def listar_archivos(linea: Optional[str] = None, origen: str = "todos", u=Depend
     """origen: 'mios' | 'compartidos' | 'todos'."""
     conn = get_db()
     cond, params = _cond_visible(u)
-    q = f"""SELECT a.id, a.nombre, a.linea, a.equipo, a.filas, a.estado, a.subido_por, a.subido_en,
+    q = f"""SELECT a.id, a.nombre, a.linea, a.equipo, a.filas, a.estado, a.tipo, a.subido_por, a.subido_en,
                    COALESCE(us.username, us.nombre) AS subido_por_nombre,
                    (a.subido_por=?) AS es_mio,
                    (SELECT COUNT(*) FROM comparticiones c2 WHERE c2.archivo_id=a.id) AS num_compartidos
             FROM archivos a LEFT JOIN usuarios us ON a.subido_por=us.id
-            WHERE {cond}"""
+            WHERE {cond} AND a.estado<>'borrador'"""
     params = [u["id"], *params]
     if origen == "mios":
         q += " AND a.subido_por=?"; params.append(u["id"])
@@ -352,9 +363,9 @@ def eliminar_archivo(archivo_id: int, u=Depends(get_usuario_actual)):
     conn.commit()
     conn.close()
 
-    ruta = f"reportes/{archivo_id}_reporte.xlsx"
-    if os.path.exists(ruta):
-        os.remove(ruta)
+    for ruta in (f"reportes/{archivo_id}_reporte.xlsx", f"datasets/{archivo_id}.csv.gz", f"borradores/{archivo_id}.src"):
+        if os.path.exists(ruta):
+            os.remove(ruta)
 
     return {"mensaje": "Archivo eliminado correctamente", "archivo_id": archivo_id}
 
@@ -557,3 +568,243 @@ init_db()
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Datasets genéricos: cualquier Excel/CSV con detección de columnas y revisión manual
+# Flujo: analizar (sube y propone) → [re-analizar con otra hoja/fila] → confirmar (limpia y guarda)
+# ═══════════════════════════════════════════════════════════════════════════════
+MAX_BYTES_DATASET = 25 * 1024 * 1024
+MAX_FILAS_DATASET = 500_000
+MAX_COLUMNAS_DATASET = 200
+
+class ColumnaIn(BaseModel):
+    nombre: str                       # nombre original en el archivo
+    rol: str
+    nombre_mostrar: Optional[str] = None
+
+class ConfirmarIn(BaseModel):
+    hoja: Optional[str] = None
+    fila_encabezado: Optional[int] = None
+    columnas: List[ColumnaIn]
+    guardar_plantilla: bool = False
+    nombre_plantilla: Optional[str] = None
+
+def _json_seguro(obj):
+    """Convierte tipos de numpy/pandas a tipos JSON normales."""
+    return json.loads(json.dumps(obj, default=lambda o: o.item() if hasattr(o, "item") else str(o)))
+
+def _borrador_propio(conn, archivo_id, u):
+    a = conn.execute("SELECT * FROM archivos WHERE id=? AND subido_por=? AND tipo='generico' AND estado='borrador'",
+                     (archivo_id, u["id"])).fetchone()
+    if not a:
+        raise HTTPException(status_code=404, detail="Borrador no encontrado")
+    return a
+
+def _plantilla_para(conn, u, nombres):
+    """Plantilla propia que coincide exacto (misma huella) o, si no, la más parecida (>= 70 %)."""
+    filas = conn.execute("SELECT * FROM plantillas WHERE owner_id=?", (u["id"],)).fetchall()
+    hf = detector.huella(nombres)
+    mejor, mejor_s = None, 0.0
+    for p in filas:
+        cfg = json.loads(p["config_json"])
+        s = 1.0 if p["huella"] == hf else detector.similitud(nombres, [c["nombre_origen"] for c in cfg["columnas"]])
+        if s > mejor_s:
+            mejor, mejor_s = (p, cfg), s
+    if mejor and mejor_s >= 0.7:
+        return mejor[0], mejor[1], mejor_s
+    return None, None, 0.0
+
+def _analisis(conn, archivo_id, contenido, nombre, u, hoja=None, fila_encabezado=None):
+    try:
+        r = detector.leer_archivo(contenido, nombre, hoja=hoja, fila_encabezado=fila_encabezado)
+    except detector.ArchivoNoSoportado as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"No se pudo leer el archivo: {e}")
+    df = r["df"]
+    if df.shape[1] > MAX_COLUMNAS_DATASET:
+        raise HTTPException(status_code=422, detail=f"El archivo tiene {df.shape[1]} columnas (máximo {MAX_COLUMNAS_DATASET}).")
+    if len(df) > MAX_FILAS_DATASET:
+        raise HTTPException(status_code=422, detail=f"El archivo tiene {len(df):,} filas (máximo {MAX_FILAS_DATASET:,}).")
+    perfiles = detector.perfilar_columnas(df)
+    pl, cfg, sim = _plantilla_para(conn, u, list(df.columns))
+    if pl:
+        perfiles = detector.aplicar_plantilla(perfiles, cfg["columnas"])
+    for p in perfiles:
+        p.setdefault("nombre_mostrar", p["nombre"])
+        p["revisar"] = p["confianza"] < detector.UMBRAL_REVISAR
+    muestra = df.head(8).astype(object).where(df.head(8).notna(), None)
+    return _json_seguro({
+        "archivo_id": archivo_id, "nombre": nombre,
+        "hojas": r["hojas"], "hoja": r["hoja"], "fila_encabezado": r["fila_encabezado"],
+        "sin_encabezado": r["sin_encabezado"], "filas": int(len(df)),
+        "columnas": perfiles, "roles": detector.ROLES, "umbral_revisar": detector.UMBRAL_REVISAR,
+        "vista_previa": {"columnas": [str(c) for c in df.columns],
+                         "filas": [[None if v is None else str(v) for v in fila] for fila in muestra.values.tolist()]},
+        "plantilla": {"id": pl["id"], "nombre": pl["nombre"], "similitud": round(sim, 2)} if pl else None,
+    })
+
+@app.post("/datasets/analizar")
+async def analizar_dataset(file: UploadFile = File(...), u=Depends(get_usuario_actual)):
+    contenido = await file.read(MAX_BYTES_DATASET + 1)
+    if not contenido:
+        raise HTTPException(status_code=422, detail="El archivo está vacío")
+    if len(contenido) > MAX_BYTES_DATASET:
+        raise HTTPException(status_code=413, detail=f"El archivo supera {MAX_BYTES_DATASET // (1024*1024)} MB")
+    nombre = os.path.basename(file.filename or "archivo")
+    conn = get_db()
+    try:
+        # borradores abandonados del mismo usuario (de más de un día) se limpian
+        viejos = conn.execute("""SELECT id FROM archivos WHERE subido_por=? AND estado='borrador'
+                                 AND subido_en < datetime('now','-1 day')""", (u["id"],)).fetchall()
+        for v in viejos:
+            conn.execute("DELETE FROM archivos WHERE id=?", (v["id"],))
+            if os.path.exists(f"borradores/{v['id']}.src"): os.remove(f"borradores/{v['id']}.src")
+        cur = conn.execute("""INSERT INTO archivos (nombre,tipo,filas,estado,subido_por)
+                              VALUES (?,'generico',0,'borrador',?)""", (nombre, u["id"]))
+        aid = cur.lastrowid
+        try:
+            res = _analisis(conn, aid, contenido, nombre, u)
+        except HTTPException:
+            conn.execute("DELETE FROM archivos WHERE id=?", (aid,)); conn.commit()
+            raise
+        os.makedirs("borradores", exist_ok=True)
+        with open(f"borradores/{aid}.src", "wb") as f:
+            f.write(contenido)
+        conn.commit()
+        return res
+    finally:
+        conn.close()
+
+@app.get("/datasets/{archivo_id}/analisis")
+def reanalizar_dataset(archivo_id: int, hoja: Optional[str] = None, fila_encabezado: Optional[int] = None,
+                       u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        a = _borrador_propio(conn, archivo_id, u)
+        ruta = f"borradores/{archivo_id}.src"
+        if not os.path.exists(ruta):
+            raise HTTPException(status_code=410, detail="El borrador expiró; vuelve a subir el archivo")
+        with open(ruta, "rb") as f:
+            contenido = f.read()
+        return _analisis(conn, archivo_id, contenido, a["nombre"], u, hoja=hoja, fila_encabezado=fila_encabezado)
+    finally:
+        conn.close()
+
+@app.delete("/datasets/{archivo_id}/borrador")
+def cancelar_borrador(archivo_id: int, u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        _borrador_propio(conn, archivo_id, u)
+        conn.execute("DELETE FROM archivos WHERE id=?", (archivo_id,)); conn.commit()
+    finally:
+        conn.close()
+    if os.path.exists(f"borradores/{archivo_id}.src"): os.remove(f"borradores/{archivo_id}.src")
+    return {"mensaje": "Borrador descartado"}
+
+@app.post("/datasets/{archivo_id}/confirmar")
+def confirmar_dataset(archivo_id: int, datos: ConfirmarIn, u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        a = _borrador_propio(conn, archivo_id, u)
+        ruta = f"borradores/{archivo_id}.src"
+        if not os.path.exists(ruta):
+            raise HTTPException(status_code=410, detail="El borrador expiró; vuelve a subir el archivo")
+        for c in datos.columnas:
+            if c.rol not in detector.ROLES:
+                raise HTTPException(status_code=422, detail=f"Rol no válido: {c.rol}")
+        if not any(c.rol != "ignorar" for c in datos.columnas):
+            raise HTTPException(status_code=422, detail="Deja al menos una columna sin ignorar")
+        with open(ruta, "rb") as f:
+            contenido = f.read()
+        try:
+            r = detector.leer_archivo(contenido, a["nombre"], hoja=datos.hoja, fila_encabezado=datos.fila_encabezado)
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"No se pudo leer el archivo: {e}")
+        df0 = r["df"]
+        columnas = [{"nombre": c.nombre, "rol": c.rol, "nombre_mostrar": (c.nombre_mostrar or "").strip() or c.nombre}
+                    for c in datos.columnas if c.nombre in df0.columns]
+        limpio = detector.aplicar_esquema(df0, columnas)
+        if limpio.empty:
+            raise HTTPException(status_code=422, detail="Después de limpiar no quedaron datos")
+        # esquema final con los nombres ya únicos que quedaron en el DataFrame limpio
+        activas = [c for c in columnas if c["rol"] != "ignorar"]
+        esquema = [{"nombre": nombre_final, "rol": c["rol"], "origen": c["nombre"]}
+                   for nombre_final, c in zip(limpio.columns, activas)]
+        os.makedirs("datasets", exist_ok=True)
+        limpio.to_csv(f"datasets/{archivo_id}.csv.gz", index=False, compression="gzip", date_format="%Y-%m-%d %H:%M:%S")
+        hf = detector.huella([c["nombre"] for c in columnas])
+        conn.execute("""UPDATE archivos SET estado='procesado', filas=?, esquema_json=?, huella=? WHERE id=?""",
+                     (int(len(limpio)), json.dumps({"hoja": r["hoja"], "fila_encabezado": r["fila_encabezado"],
+                                                    "columnas": esquema}), hf, archivo_id))
+        plantilla_guardada = False
+        if datos.guardar_plantilla:
+            cfg = {"columnas": [{"nombre_origen": c["nombre"], "rol": c["rol"], "nombre_mostrar": c["nombre_mostrar"]}
+                                for c in columnas]}
+            nombre_pl = (datos.nombre_plantilla or "").strip() or os.path.splitext(a["nombre"])[0]
+            conn.execute("""INSERT INTO plantillas (owner_id,nombre,huella,config_json) VALUES (?,?,?,?)
+                            ON CONFLICT(owner_id,huella) DO UPDATE SET nombre=excluded.nombre, config_json=excluded.config_json""",
+                         (u["id"], nombre_pl[:80], hf, json.dumps(cfg)))
+            plantilla_guardada = True
+        conn.commit()
+    finally:
+        conn.close()
+    try: os.remove(ruta)
+    except OSError: pass
+    return {"mensaje": f"'{a['nombre']}' guardado: {len(limpio):,} filas, {len(esquema)} columnas.",
+            "archivo_id": archivo_id, "filas": int(len(limpio)), "plantilla_guardada": plantilla_guardada}
+
+def _cargar_dataset(a):
+    esquema = json.loads(a["esquema_json"] or "{}").get("columnas", [])
+    ruta = f"datasets/{a['id']}.csv.gz"
+    if a["tipo"] != "generico" or a["estado"] != "procesado" or not esquema or not os.path.exists(ruta):
+        raise HTTPException(status_code=404, detail="Datos no disponibles")
+    import pandas as pd
+    fechas = [c["nombre"] for c in esquema if c["rol"] == "fecha"]
+    numeros = [c["nombre"] for c in esquema if c["rol"] == "numero"]
+    dtypes = {c["nombre"]: str for c in esquema if c["rol"] not in ("fecha", "numero")}
+    df = pd.read_csv(ruta, dtype=dtypes, parse_dates=fechas, keep_default_na=False, na_values=[""])
+    for c in numeros:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df, esquema
+
+@app.get("/datasets/{archivo_id}/datos")
+def ver_dataset(archivo_id: int, pagina: int = Query(1, ge=1), por_pagina: int = Query(50, ge=1, le=200),
+                u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        a = _archivo_con_acceso(conn, archivo_id, u)
+    finally:
+        conn.close()
+    df, esquema = _cargar_dataset(a)
+    ini = (pagina - 1) * por_pagina
+    trozo = df.iloc[ini:ini + por_pagina].copy()
+    for c in esquema:
+        if c["rol"] == "fecha":
+            trozo[c["nombre"]] = trozo[c["nombre"]].dt.strftime("%Y-%m-%d %H:%M").str.replace(" 00:00", "", regex=False)
+    trozo = trozo.astype(object).where(trozo.notna(), None)
+    return _json_seguro({
+        "archivo": {"id": a["id"], "nombre": a["nombre"], "es_mio": a["subido_por"] == u["id"]},
+        "columnas": esquema, "total": int(len(df)), "pagina": pagina, "por_pagina": por_pagina,
+        "filas": trozo.values.tolist(),
+        "resumen": detector.resumen_columnas(df, [{"nombre": c["nombre"], "rol": c["rol"]} for c in esquema]),
+    })
+
+# ── Plantillas guardadas (privadas de cada usuario)
+@app.get("/plantillas")
+def listar_plantillas(u=Depends(get_usuario_actual)):
+    conn = get_db()
+    rows = conn.execute("SELECT id,nombre,config_json,creado_en FROM plantillas WHERE owner_id=? ORDER BY id DESC",
+                        (u["id"],)).fetchall(); conn.close()
+    return [{"id": r["id"], "nombre": r["nombre"], "creado_en": r["creado_en"],
+             "columnas": [c["nombre_origen"] for c in json.loads(r["config_json"])["columnas"]]} for r in rows]
+
+@app.delete("/plantillas/{plantilla_id}")
+def borrar_plantilla(plantilla_id: int, u=Depends(get_usuario_actual)):
+    conn = get_db()
+    cur = conn.execute("DELETE FROM plantillas WHERE id=? AND owner_id=?", (plantilla_id, u["id"]))
+    conn.commit(); conn.close()
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Plantilla no encontrada")
+    return {"mensaje": "Plantilla eliminada"}
