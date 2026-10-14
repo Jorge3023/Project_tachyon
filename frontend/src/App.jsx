@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard'
 import Archivos from './pages/Archivos'
 import ElegirUsername from './pages/ElegirUsername'
 import Usuarios from './pages/Usuarios'
+import VerDatos from './pages/VerDatos'
 import { LineaPage, ReportesPage } from './pages/Placeholders'
 
 function PrivateRoute({ children }) {
@@ -42,6 +43,11 @@ function AppRoutes() {
       <Route path="/archivos" element={
         <PrivateRoute>
           <AppLayout><Archivos /></AppLayout>
+        </PrivateRoute>
+      } />
+      <Route path="/datos/:id" element={
+        <PrivateRoute>
+          <AppLayout><VerDatos /></AppLayout>
         </PrivateRoute>
       } />
       <Route path="/usuarios" element={

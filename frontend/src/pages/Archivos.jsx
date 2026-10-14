@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import api from '../services/api'
+import { useNavigate } from 'react-router-dom'
 import ModalCompartir from '../components/ModalCompartir'
+import ModalRevisarColumnas from '../components/ModalRevisarColumnas'
 
 const LINEAS = ['A', 'B', 'C', 'D', 'E']
 
@@ -125,6 +127,10 @@ export default function Archivos() {
   const [ultimoResumen, setUltimoResumen] = useState(null)
   const [descargando,   setDescargando]   = useState(null)
   const inputRef = useRef()
+  const inputGenericoRef = useRef()
+  const [analisis,      setAnalisis]      = useState(null)    // borrador de un archivo genérico en revisión
+  const [analizando,    setAnalizando]    = useState(false)
+  const navigate = useNavigate()
 
   const cargarLista = () =>
     api.get(`/archivos?origen=${origen}`).then(r => setArchivos(r.data)).catch(() => {})
@@ -141,6 +147,26 @@ export default function Archivos() {
     }
     e.target.value = ''
     setArchivoSel(file)
+  }
+
+  /* Cualquier Excel/CSV: se sube, se analizan las columnas y se abre la pantalla de revisión */
+  const handleGenerico = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    if (!file.name.match(/\.(xlsx|xlsm|xls|csv|tsv|txt)$/i)) {
+      setMensaje({ tipo: 'error', texto: 'Formatos admitidos: .xlsx, .xls, .csv, .tsv' })
+      return
+    }
+    setMensaje(null); setAnalizando(true)
+    const formData = new FormData()
+    formData.append('file', file)
+    try {
+      const r = await api.post('/datasets/analizar', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
+      setAnalisis(r.data)
+    } catch (err) {
+      setMensaje({ tipo: 'error', texto: err.response?.data?.detail || 'No se pudo leer el archivo' })
+    } finally { setAnalizando(false) }
   }
 
   /* El modal llama aquí con la contraseña ya validada */
@@ -201,6 +227,18 @@ const handleConfirmar = async (password, fileDirecto = null) => {
         />
       )}
 
+      {analisis && (
+        <ModalRevisarColumnas
+          analisis={analisis}
+          onCancelar={() => setAnalisis(null)}
+          onGuardado={(r) => {
+            setAnalisis(null)
+            setMensaje({ tipo: 'ok', texto: r.mensaje })
+            cargarLista()
+          }}
+        />
+      )}
+
       {compartiendo && (
         <ModalCompartir
           archivo={compartiendo}
@@ -211,7 +249,7 @@ const handleConfirmar = async (password, fileDirecto = null) => {
 
       <div className="flex-1 flex flex-col overflow-hidden">
         <header className="bg-white border-b border-gray-100 px-6 py-4">
-          <h1 className="text-base font-semibold text-gray-900">Archivos de producción</h1>
+          <h1 className="text-base font-semibold text-gray-900">Mis archivos</h1>
           <p className="text-xs text-gray-400 mt-0.5">
             Tus archivos son privados: solo tú los ves, salvo que los compartas por correo.
           </p>
@@ -219,11 +257,34 @@ const handleConfirmar = async (password, fileDirecto = null) => {
 
         <main className="flex-1 overflow-y-auto p-6 space-y-5">
 
-          {/* ── Zona de carga ── */}
+          {/* ── Cualquier Excel o CSV ── */}
+          <div className="card">
+            <h2 className="text-sm font-semibold text-gray-900 mb-1">Subir cualquier Excel o CSV</h2>
+            <p className="text-xs text-gray-400 mb-4">
+              Detectamos las columnas por ti y tú confirmas antes de guardar. Si el formato se repite, lo recordamos con una plantilla.
+            </p>
+            <button type="button" onClick={() => inputGenericoRef.current?.click()} disabled={analizando}
+              className="w-full border-2 border-dashed border-gray-200 rounded-xl p-6 text-center cursor-pointer
+                         hover:border-brand-400 hover:bg-brand-50/20 transition-all disabled:opacity-60">
+              {analizando
+                ? <span className="flex items-center gap-2 justify-center text-sm text-gray-600">
+                    <span className="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+                    Leyendo el archivo…
+                  </span>
+                : <>
+                    <span className="block text-sm font-medium text-gray-700">Seleccionar archivo</span>
+                    <span className="block text-xs text-gray-400 mt-1">.xlsx, .xls, .csv, .tsv — hasta 25 MB</span>
+                  </>}
+            </button>
+            <input ref={inputGenericoRef} type="file" accept=".xlsx,.xlsm,.xls,.csv,.tsv,.txt" className="hidden"
+              aria-label="Archivo Excel o CSV" onChange={handleGenerico} />
+          </div>
+
+          {/* ── Zona de carga (producción SMT) ── */}
           {(
 
             <div className="card">
-              <h2 className="text-sm font-semibold text-gray-900 mb-4">Cargar nuevo archivo</h2>
+              <h2 className="text-sm font-semibold text-gray-900 mb-4">Cargar archivo de producción SMT</h2>
 
               {/* Selector de línea */}
               <div className="flex items-center gap-3 mb-5">
@@ -318,9 +379,9 @@ const handleConfirmar = async (password, fileDirecto = null) => {
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-gray-900 truncate">{a.nombre}</p>
                       <p className="text-xs text-gray-400">
-                        Línea {a.linea}
+                        {a.tipo === 'generico' ? 'Datos' : `Línea ${a.linea}`}
                         {a.equipo ? ` · ${a.equipo}` : ''}
-                        {` · ${a.filas?.toLocaleString() ?? 0} registros`}
+                        {` · ${a.filas?.toLocaleString() ?? 0} ${a.tipo === 'generico' ? 'filas' : 'registros'}`}
                         {a.es_mio ? '' : ` · compartido por ${a.subido_por_nombre || 'otro usuario'}`}
                         {` · ${new Date(a.subido_en).toLocaleDateString('es-MX')}`}
                       </p>
@@ -342,7 +403,13 @@ const handleConfirmar = async (password, fileDirecto = null) => {
                           Compartir
                         </button>
                       )}
-                      {a.estado === 'procesado' && (
+                      {a.estado === 'procesado' && a.tipo === 'generico' && (
+                        <button onClick={() => navigate(`/datos/${a.id}`)}
+                          className="btn-ghost text-brand-600 hover:text-brand-700 hover:bg-brand-50 text-xs">
+                          Ver datos
+                        </button>
+                      )}
+                      {a.estado === 'procesado' && a.tipo !== 'generico' && (
                         <button onClick={() => handleDescargar(a)}
                           disabled={descargando === a.id}
                           className="btn-ghost text-brand-600 hover:text-brand-700 hover:bg-brand-50 text-xs"
