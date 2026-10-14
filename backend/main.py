@@ -1,13 +1,16 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from datetime import datetime, timedelta
 from typing import Optional, List
-import jwt, bcrypt, sqlite3, json, os, io, math, warnings, re
+import jwt, bcrypt, json, os, io, math, warnings, re
 from pydantic import BaseModel
 from excel_parser import procesar_excel
 import detector
+import db
+import storage
+from db import get_db
 
 app = FastAPI(title="ProduccionApp API")
 
@@ -25,7 +28,22 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"estado": "En línea", "mensaje": "API de ProduccionApp funcionando correctamente en Render"}
+    return {"estado": "En línea", "mensaje": "API de ProduccionApp funcionando correctamente en Render",
+            "base_de_datos": db.motor(), "archivos": storage.modo()}
+
+@app.on_event("shutdown")
+def _al_apagar():
+    db.cerrar()
+
+@app.exception_handler(storage.ErrorAlmacenamiento)
+def _error_almacenamiento(request, exc):
+    print(f"=== Error de almacenamiento: {exc} ===")
+    return JSONResponse(status_code=503, content={"detail": "El almacenamiento de archivos no está disponible. Intenta de nuevo en un momento."})
+
+# En hosts con disco efímero (Render) SQLite y el disco local se pierden al reiniciar.
+if os.getenv("RENDER") and (not db.ES_POSTGRES or not storage.ES_SUPABASE):
+    warnings.warn("Estás en Render sin DATABASE_URL y/o SUPABASE_URL+SUPABASE_SECRET_KEY: los datos se perderán "
+                  "cuando el servicio se reinicie. Configura Supabase (ver README).")
 
 # SECRET_KEY: define la variable de entorno SECRET_KEY en producción (>= 32 caracteres).
 # Si no existe se usa una clave de desarrollo y se avisa en consola.
@@ -38,47 +56,45 @@ TOKEN_HOURS = 8
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 # ── DB ────────────────────────────────────────────────────────────────────────
-def get_db():
-    conn = sqlite3.connect("produccion.db")
-    conn.row_factory = sqlite3.Row
-    return conn
-
+# SQLite en local; PostgreSQL (Supabase) si se define DATABASE_URL. Ver db.py.
 def init_db():
     conn = get_db(); cur = conn.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS usuarios (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cur.execute(db.ddl("""CREATE TABLE IF NOT EXISTS usuarios (
+        id {PK},
         nombre TEXT NOT NULL, correo TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL, rol TEXT DEFAULT 'operador',
-        activo INTEGER DEFAULT 1, creado_en TEXT DEFAULT CURRENT_TIMESTAMP)""")
-    cur.execute("""CREATE TABLE IF NOT EXISTS archivos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        activo INTEGER DEFAULT 1, creado_en {TS})"""))
+    cur.execute(db.ddl("""CREATE TABLE IF NOT EXISTS archivos (
+        id {PK},
         nombre TEXT NOT NULL, linea TEXT, equipo TEXT,
         filas INTEGER DEFAULT 0, estado TEXT DEFAULT 'pendiente',
-        subido_por INTEGER, subido_en TEXT DEFAULT CURRENT_TIMESTAMP,
-        reporte_json TEXT, resumen_json TEXT)""")
+        subido_por INTEGER, subido_en {TS},
+        reporte_json TEXT, resumen_json TEXT)"""))
 
     # Migraciones (bases creadas con versiones anteriores)
-    cols = [r[1] for r in cur.execute("PRAGMA table_info(usuarios)").fetchall()]
-    if "username" not in cols:
+    if "username" not in db.columnas(conn, "usuarios"):
         cur.execute("ALTER TABLE usuarios ADD COLUMN username TEXT")
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_username "
                 "ON usuarios(lower(username)) WHERE username IS NOT NULL")
     # Archivos genéricos (cualquier Excel/CSV): tipo, esquema de columnas confirmado y huella de columnas
-    cols_a = [r[1] for r in cur.execute("PRAGMA table_info(archivos)").fetchall()]
+    cols_a = db.columnas(conn, "archivos")
     for nueva, ddl in (("tipo", "TEXT DEFAULT 'produccion'"), ("esquema_json", "TEXT"), ("huella", "TEXT")):
         if nueva not in cols_a:
             cur.execute(f"ALTER TABLE archivos ADD COLUMN {nueva} {ddl}")
-    cur.execute("""CREATE TABLE IF NOT EXISTS plantillas (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cur.execute(db.ddl("""CREATE TABLE IF NOT EXISTS plantillas (
+        id {PK},
         owner_id INTEGER NOT NULL, nombre TEXT NOT NULL, huella TEXT NOT NULL,
-        config_json TEXT NOT NULL, creado_en TEXT DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(owner_id, huella))""")
+        config_json TEXT NOT NULL, creado_en {TS},
+        UNIQUE(owner_id, huella))"""))
     # Archivos compartidos con otras personas por correo (solo lectura)
-    cur.execute("""CREATE TABLE IF NOT EXISTS comparticiones (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cur.execute(db.ddl("""CREATE TABLE IF NOT EXISTS comparticiones (
+        id {PK},
         archivo_id INTEGER NOT NULL, correo TEXT NOT NULL,
-        compartido_por INTEGER, creado_en TEXT DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(archivo_id, correo))""")
+        compartido_por INTEGER, creado_en {TS},
+        UNIQUE(archivo_id, correo))"""))
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_archivos_subido_por ON archivos(subido_por)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_comparticiones_correo ON comparticiones(correo)")
+    db.asegurar_seguridad(conn)
 
     # Usuarios por defecto
     usuarios_default = [
@@ -308,9 +324,8 @@ async def upload_archivo(
         excel_out  = resultado["excel_out"]
         equipo     = reporte["Equipment"].iloc[0] if "Equipment" in reporte.columns and len(reporte) > 0 else ""
 
-        os.makedirs("reportes", exist_ok=True)
-        with open(f"reportes/{archivo_id}_reporte.xlsx", "wb") as f:
-            f.write(excel_out)
+        storage.put(f"reportes/{archivo_id}_reporte.xlsx", excel_out,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
         conn.execute("""UPDATE archivos
                         SET filas=?,estado='procesado',reporte_json=?,resumen_json=?,equipo=?
@@ -337,11 +352,11 @@ def descargar(archivo_id: int, u=Depends(get_usuario_actual)):
         a = _archivo_con_acceso(conn, archivo_id, u)
     finally:
         conn.close()
-    ruta = f"reportes/{archivo_id}_reporte.xlsx"
-    if not os.path.exists(ruta):
+    try:
+        data = storage.get(f"reportes/{archivo_id}_reporte.xlsx")
+    except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Reporte no encontrado")
     nombre = (a["nombre"].rsplit(".", 1)[0] if a else f"reporte_{archivo_id}") + "_analisis.xlsx"
-    with open(ruta, "rb") as f: data = f.read()
     return StreamingResponse(io.BytesIO(data),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{nombre}"'})
@@ -371,9 +386,8 @@ def eliminar_archivo(archivo_id: int, u=Depends(get_usuario_actual)):
     conn.commit()
     conn.close()
 
-    for ruta in (f"reportes/{archivo_id}_reporte.xlsx", f"datasets/{archivo_id}.csv.gz", f"borradores/{archivo_id}.src"):
-        if os.path.exists(ruta):
-            os.remove(ruta)
+    for ruta in (f"reportes/{archivo_id}_reporte.xlsx", f"datasets/{archivo_id}.parquet", f"borradores/{archivo_id}.src"):
+        storage.delete(ruta)
 
     return {"mensaje": "Archivo eliminado correctamente", "archivo_id": archivo_id}
 
@@ -520,6 +534,37 @@ def rendimiento_lineas(periodo: str = "dia", linea: Optional[str] = None, u=Depe
              "qty_passed": int(r["qty_passed"])} for _, r in res.iterrows()]
 
 # ── Usuarios ───────────────────────────────────────────────────────────────────
+@app.get("/admin/diagnostico")
+def diagnostico(u=Depends(require_admin)):
+    """Comprueba de verdad la base de datos y el almacenamiento (ida y vuelta). Solo administradores."""
+    out = {"base_de_datos": {"motor": db.motor(), "ok": False, "detalle": ""},
+           "archivos": {"modo": storage.modo(), "ok": False, "detalle": ""},
+           "advertencias": []}
+    try:
+        conn = get_db()
+        try:
+            n = conn.execute("SELECT COUNT(*) AS n FROM usuarios").fetchone()["n"]
+        finally:
+            conn.close()
+        out["base_de_datos"].update(ok=True, detalle=f"{n} usuario(s)")
+    except Exception as e:
+        out["base_de_datos"]["detalle"] = f"{type(e).__name__}: {str(e)[:160]}"
+    try:
+        marca = f"salud/ping_{u['id']}.txt"
+        storage.put(marca, b"ok", "text/plain")
+        ok = storage.get(marca) == b"ok"
+        storage.delete(marca)
+        out["archivos"].update(ok=ok, detalle="escritura, lectura y borrado correctos" if ok else "lectura distinta a lo escrito")
+    except Exception as e:
+        out["archivos"]["detalle"] = f"{type(e).__name__}: {str(e)[:160]}"
+    if not db.ES_POSTGRES:
+        out["advertencias"].append("Base de datos SQLite: en un host con disco efímero se pierde al reiniciar. Define DATABASE_URL.")
+    if not storage.ES_SUPABASE:
+        out["advertencias"].append("Archivos en disco local: se pierden al reiniciar en hosts efímeros. Define SUPABASE_URL y SUPABASE_SECRET_KEY.")
+    if os.getenv("SEED_DEMO_USERS") == "1":
+        out["advertencias"].append("SEED_DEMO_USERS=1: existen cuentas de demostración con contraseñas públicas.")
+    return out
+
 @app.get("/usuarios")
 def listar_usuarios(u=Depends(require_admin)):
     conn = get_db()
@@ -653,6 +698,12 @@ def _analisis(conn, archivo_id, contenido, nombre, u, hoja=None, fila_encabezado
         "plantilla": {"id": pl["id"], "nombre": pl["nombre"], "similitud": round(sim, 2)} if pl else None,
     })
 
+def _leer_borrador(archivo_id: int) -> bytes:
+    try:
+        return storage.get(f"borradores/{archivo_id}.src")
+    except FileNotFoundError:
+        raise HTTPException(status_code=410, detail="El borrador expiró; vuelve a subir el archivo")
+
 @app.post("/datasets/analizar")
 async def analizar_dataset(file: UploadFile = File(...), u=Depends(get_usuario_actual)):
     contenido = await file.read(MAX_BYTES_DATASET + 1)
@@ -665,10 +716,10 @@ async def analizar_dataset(file: UploadFile = File(...), u=Depends(get_usuario_a
     try:
         # borradores abandonados del mismo usuario (de más de un día) se limpian
         viejos = conn.execute("""SELECT id FROM archivos WHERE subido_por=? AND estado='borrador'
-                                 AND subido_en < datetime('now','-1 day')""", (u["id"],)).fetchall()
+                                 AND subido_en < ?""", (u["id"], db.hace_dias(1))).fetchall()
         for v in viejos:
             conn.execute("DELETE FROM archivos WHERE id=?", (v["id"],))
-            if os.path.exists(f"borradores/{v['id']}.src"): os.remove(f"borradores/{v['id']}.src")
+            storage.delete(f"borradores/{v['id']}.src")
         cur = conn.execute("""INSERT INTO archivos (nombre,tipo,filas,estado,subido_por)
                               VALUES (?,'generico',0,'borrador',?)""", (nombre, u["id"]))
         aid = cur.lastrowid
@@ -677,9 +728,7 @@ async def analizar_dataset(file: UploadFile = File(...), u=Depends(get_usuario_a
         except HTTPException:
             conn.execute("DELETE FROM archivos WHERE id=?", (aid,)); conn.commit()
             raise
-        os.makedirs("borradores", exist_ok=True)
-        with open(f"borradores/{aid}.src", "wb") as f:
-            f.write(contenido)
+        storage.put(f"borradores/{aid}.src", contenido)
         conn.commit()
         return res
     finally:
@@ -691,11 +740,7 @@ def reanalizar_dataset(archivo_id: int, hoja: Optional[str] = None, fila_encabez
     conn = get_db()
     try:
         a = _borrador_propio(conn, archivo_id, u)
-        ruta = f"borradores/{archivo_id}.src"
-        if not os.path.exists(ruta):
-            raise HTTPException(status_code=410, detail="El borrador expiró; vuelve a subir el archivo")
-        with open(ruta, "rb") as f:
-            contenido = f.read()
+        contenido = _leer_borrador(archivo_id)
         return _analisis(conn, archivo_id, contenido, a["nombre"], u, hoja=hoja, fila_encabezado=fila_encabezado)
     finally:
         conn.close()
@@ -708,7 +753,7 @@ def cancelar_borrador(archivo_id: int, u=Depends(get_usuario_actual)):
         conn.execute("DELETE FROM archivos WHERE id=?", (archivo_id,)); conn.commit()
     finally:
         conn.close()
-    if os.path.exists(f"borradores/{archivo_id}.src"): os.remove(f"borradores/{archivo_id}.src")
+    storage.delete(f"borradores/{archivo_id}.src")
     return {"mensaje": "Borrador descartado"}
 
 @app.post("/datasets/{archivo_id}/confirmar")
@@ -716,16 +761,12 @@ def confirmar_dataset(archivo_id: int, datos: ConfirmarIn, u=Depends(get_usuario
     conn = get_db()
     try:
         a = _borrador_propio(conn, archivo_id, u)
-        ruta = f"borradores/{archivo_id}.src"
-        if not os.path.exists(ruta):
-            raise HTTPException(status_code=410, detail="El borrador expiró; vuelve a subir el archivo")
+        contenido = _leer_borrador(archivo_id)
         for c in datos.columnas:
             if c.rol not in detector.ROLES:
                 raise HTTPException(status_code=422, detail=f"Rol no válido: {c.rol}")
         if not any(c.rol != "ignorar" for c in datos.columnas):
             raise HTTPException(status_code=422, detail="Deja al menos una columna sin ignorar")
-        with open(ruta, "rb") as f:
-            contenido = f.read()
         try:
             r = detector.leer_archivo(contenido, a["nombre"], hoja=datos.hoja, fila_encabezado=datos.fila_encabezado)
         except Exception as e:
@@ -740,41 +781,42 @@ def confirmar_dataset(archivo_id: int, datos: ConfirmarIn, u=Depends(get_usuario
         activas = [c for c in columnas if c["rol"] != "ignorar"]
         esquema = [{"nombre": nombre_final, "rol": c["rol"], "origen": c["nombre"]}
                    for nombre_final, c in zip(limpio.columns, activas)]
-        os.makedirs("datasets", exist_ok=True)
-        limpio.to_csv(f"datasets/{archivo_id}.csv.gz", index=False, compression="gzip", date_format="%Y-%m-%d %H:%M:%S")
-        hf = detector.huella([c["nombre"] for c in columnas])
-        conn.execute("""UPDATE archivos SET estado='procesado', filas=?, esquema_json=?, huella=? WHERE id=?""",
-                     (int(len(limpio)), json.dumps({"hoja": r["hoja"], "fila_encabezado": r["fila_encabezado"],
-                                                    "columnas": esquema}), hf, archivo_id))
-        plantilla_guardada = False
-        if datos.guardar_plantilla:
-            cfg = {"columnas": [{"nombre_origen": c["nombre"], "rol": c["rol"], "nombre_mostrar": c["nombre_mostrar"]}
-                                for c in columnas]}
-            nombre_pl = (datos.nombre_plantilla or "").strip() or os.path.splitext(a["nombre"])[0]
-            conn.execute("""INSERT INTO plantillas (owner_id,nombre,huella,config_json) VALUES (?,?,?,?)
-                            ON CONFLICT(owner_id,huella) DO UPDATE SET nombre=excluded.nombre, config_json=excluded.config_json""",
-                         (u["id"], nombre_pl[:80], hf, json.dumps(cfg)))
-            plantilla_guardada = True
-        conn.commit()
+        buf = io.BytesIO()
+        limpio.to_parquet(buf, engine="pyarrow", compression="zstd", index=False)
+        storage.put(f"datasets/{archivo_id}.parquet", buf.getvalue(), "application/octet-stream")
+        try:
+            hf = detector.huella([c["nombre"] for c in columnas])
+            conn.execute("""UPDATE archivos SET estado='procesado', filas=?, esquema_json=?, huella=? WHERE id=?""",
+                         (int(len(limpio)), json.dumps({"hoja": r["hoja"], "fila_encabezado": r["fila_encabezado"],
+                                                        "columnas": esquema}), hf, archivo_id))
+            plantilla_guardada = False
+            if datos.guardar_plantilla:
+                cfg = {"columnas": [{"nombre_origen": c["nombre"], "rol": c["rol"], "nombre_mostrar": c["nombre_mostrar"]}
+                                    for c in columnas]}
+                nombre_pl = (datos.nombre_plantilla or "").strip() or os.path.splitext(a["nombre"])[0]
+                conn.execute("""INSERT INTO plantillas (owner_id,nombre,huella,config_json) VALUES (?,?,?,?)
+                                ON CONFLICT(owner_id,huella) DO UPDATE SET nombre=excluded.nombre, config_json=excluded.config_json""",
+                             (u["id"], nombre_pl[:80], hf, json.dumps(cfg)))
+                plantilla_guardada = True
+            conn.commit()
+        except Exception:
+            storage.delete(f"datasets/{archivo_id}.parquet")   # no dejar archivos huérfanos si falla la base de datos
+            raise
     finally:
         conn.close()
-    try: os.remove(ruta)
-    except OSError: pass
+    storage.delete(f"borradores/{archivo_id}.src")
     return {"mensaje": f"'{a['nombre']}' guardado: {len(limpio):,} filas, {len(esquema)} columnas.",
             "archivo_id": archivo_id, "filas": int(len(limpio)), "plantilla_guardada": plantilla_guardada}
 
 def _cargar_dataset(a):
     esquema = json.loads(a["esquema_json"] or "{}").get("columnas", [])
-    ruta = f"datasets/{a['id']}.csv.gz"
-    if a["tipo"] != "generico" or a["estado"] != "procesado" or not esquema or not os.path.exists(ruta):
+    if a["tipo"] != "generico" or a["estado"] != "procesado" or not esquema:
         raise HTTPException(status_code=404, detail="Datos no disponibles")
     import pandas as pd
-    fechas = [c["nombre"] for c in esquema if c["rol"] == "fecha"]
-    numeros = [c["nombre"] for c in esquema if c["rol"] == "numero"]
-    dtypes = {c["nombre"]: str for c in esquema if c["rol"] not in ("fecha", "numero")}
-    df = pd.read_csv(ruta, dtype=dtypes, parse_dates=fechas, keep_default_na=False, na_values=[""])
-    for c in numeros:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+    try:
+        df = pd.read_parquet(io.BytesIO(storage.get(f"datasets/{a['id']}.parquet")), engine="pyarrow")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Datos no disponibles")
     return df, esquema
 
 @app.get("/datasets/{archivo_id}/datos")

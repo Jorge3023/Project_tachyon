@@ -161,6 +161,11 @@ Desarrollado como proyecto de gestión y monitoreo de producción
 | `ALLOWED_ORIGINS` | URL(s) del frontend permitidas por CORS, separadas por coma. Ej: `https://tachyon.pages.dev` |
 | `SEED_DEMO_USERS` | `1` crea cuentas de demostración con contraseñas públicas. **Solo para desarrollo local;** por defecto no se crean. |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Crean el administrador inicial (contraseña de 8+ caracteres). **Necesarias** si no usas cuentas de demostración. |
+| `DATABASE_URL` | Cadena de conexión de PostgreSQL (Supabase). Si no se define se usa SQLite local, que **se pierde** en hosts con disco efímero como Render gratis. |
+| `SUPABASE_URL` | URL del proyecto de Supabase (`https://xxxx.supabase.co`). |
+| `SUPABASE_SECRET_KEY` | Clave secreta de Supabase (`sb_secret_...`) para guardar archivos en Storage. Solo en el servidor, nunca en el frontend ni en Git. |
+| `SUPABASE_BUCKET` | Nombre del bucket privado de Storage. Por defecto `datasets`. |
+| `DB_POOL_MAX` | Conexiones máximas a la base de datos (por defecto 5). |
 
 **Frontend (build)**
 
@@ -185,3 +190,22 @@ En **Mis archivos → Subir cualquier Excel o CSV** puedes subir `.xlsx`, `.xls`
 4. Si marcas **guardar como plantilla**, cualquier archivo futuro con las mismas columnas (aunque cambie el orden o se agregue alguna) se interpreta solo.
 
 Los datasets siguen las mismas reglas de privacidad: solo los ve su dueño y quienes él elija por correo. Endpoints: `POST /datasets/analizar`, `GET /datasets/{id}/analisis`, `POST /datasets/{id}/confirmar`, `GET /datasets/{id}/datos`, `GET|DELETE /plantillas`.
+
+
+## Configurar Supabase (producción)
+
+La aplicación guarda **usuarios, archivos, plantillas y permisos en PostgreSQL** y los **datos limpios, reportes y borradores en Supabase Storage** (formato Parquet). Sin estas variables usa SQLite y el disco local, solo apropiados para desarrollo.
+
+1. En [supabase.com](https://supabase.com) crea un proyecto. Anota la contraseña de la base de datos en un gestor de contraseñas.
+2. **Storage → New bucket**: nombre `datasets`, **privado** (sin marcar "Public bucket").
+3. **Connect** (arriba en el panel) → **Session pooler** → copia la cadena y sustituye `[YOUR-PASSWORD]` por tu contraseña. Usa el *session pooler* (no la conexión directa): la directa solo funciona por IPv6 y Render gratis usa IPv4. Si la contraseña tiene símbolos como `@`, `#`, `?` o `&`, codifícalos (por ejemplo `@` → `%40`).
+4. **Settings → API Keys**: copia la *Project URL* y la clave **secret** (`sb_secret_...`).
+5. En Render → **Environment** define `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SECRET_KEY` y, si cambiaste el nombre del bucket, `SUPABASE_BUCKET`. Define también `ADMIN_EMAIL` y `ADMIN_PASSWORD` (la base nueva empieza vacía).
+6. Entra como administrador → **Usuarios → Estado del sistema → Comprobar ahora**. Deben aparecer en verde *PostgreSQL (Supabase)* y *Supabase Storage*.
+
+Notas:
+- Las tablas se crean solas al arrancar, con la seguridad por filas activada y sin acceso para los roles públicos de Supabase (`anon`, `authenticated`): solo este servidor puede leerlas.
+- La clave `sb_secret_` da acceso total a tu proyecto: no la subas a Git ni la pegues en el chat. Si se filtra, genera otra en *Settings → API Keys*.
+- Si la clave nueva fallara en Storage, la clave antigua `service_role` (empieza con `eyJ`) también funciona en `SUPABASE_SECRET_KEY`.
+- Plan gratis de Supabase: 500 MB de base de datos, 1 GB de archivos y el proyecto se pausa tras una semana sin uso.
+- Los datos que ya estuvieran en el SQLite de Render **no se migran** (ese disco es efímero).
