@@ -174,3 +174,14 @@ Desarrollado como proyecto de gestión y monitoreo de producción
 - **Cuentas:** el administrador crea cuentas desde *Usuarios* (correo + contraseña temporal). En su primer ingreso, cada persona elige su **nombre de usuario** (único, de 3 a 20 caracteres, no se cambia después).
 - **Privacidad:** cada archivo (y lo que se calcula de él en el dashboard) es solo de quien lo subió. Ni el administrador ve los archivos de los demás.
 - **Compartir:** el dueño puede compartir un archivo por correo electrónico (solo lectura). Si la persona aún no tiene cuenta, lo verá cuando entre con ese correo. Se puede dejar de compartir en cualquier momento.
+
+## Cualquier Excel o CSV (datasets genéricos)
+
+En **Mis archivos → Subir cualquier Excel o CSV** puedes subir `.xlsx`, `.xls`, `.csv` o `.tsv` (hasta 25 MB).
+
+1. El sistema lee el archivo (elige la hoja con más datos, salta filas de título, detecta separador y codificación) y **propone el tipo de cada columna**: fecha, número, categoría, identificador, estado o texto libre.
+2. Una pantalla de revisión te deja corregir hoja, fila de encabezados, nombre y tipo de cada columna (o ignorarla). Las dudosas salen marcadas como *Revisar*.
+3. Al guardar se limpian los valores (`$1,234.50`, `1.234,5`, `17,3%`, fechas `dd/mm/aaaa`, números de serie de Excel) y se guarda el dataset tipado.
+4. Si marcas **guardar como plantilla**, cualquier archivo futuro con las mismas columnas (aunque cambie el orden o se agregue alguna) se interpreta solo.
+
+Los datasets siguen las mismas reglas de privacidad: solo los ve su dueño y quienes él elija por correo. Endpoints: `POST /datasets/analizar`, `GET /datasets/{id}/analisis`, `POST /datasets/{id}/confirmar`, `GET /datasets/{id}/datos`, `GET|DELETE /plantillas`.
