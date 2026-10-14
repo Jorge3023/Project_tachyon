@@ -87,16 +87,24 @@ def init_db():
         ("María Rodríguez","mrodriguez@empresa.com", "operador123",   "operador"),
         ("Carlos Méndez",  "cmendez@empresa.com",    "operador123",   "operador"),
     ]
-    # En producción: SEED_DEMO_USERS=0 y define ADMIN_EMAIL + ADMIN_PASSWORD para crear tu administrador.
-    if os.getenv("SEED_DEMO_USERS", "1") != "0":
+    # Cuentas de demostración: SOLO para desarrollo local (SEED_DEMO_USERS=1). Sus contraseñas son públicas
+    # (están en este repositorio), así que nunca deben existir en producción. Por defecto NO se crean.
+    # Para crear tu administrador define ADMIN_EMAIL + ADMIN_PASSWORD (mínimo 8 caracteres).
+    if os.getenv("SEED_DEMO_USERS", "0") == "1":
+        warnings.warn("SEED_DEMO_USERS=1: se crean cuentas de demostración con contraseñas públicas. No usar en producción.")
         for nombre, correo, pw, rol in usuarios_default:
             ph = bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
             cur.execute("INSERT OR IGNORE INTO usuarios (nombre,correo,password_hash,rol) VALUES (?,?,?,?)",
                         (nombre, correo, ph, rol))
     if os.getenv("ADMIN_EMAIL") and os.getenv("ADMIN_PASSWORD"):
-        ph = bcrypt.hashpw(os.environ["ADMIN_PASSWORD"].encode(), bcrypt.gensalt()).decode()
-        cur.execute("INSERT OR IGNORE INTO usuarios (nombre,correo,password_hash,rol) VALUES (?,?,?,?)",
-                    ("Administrador", os.environ["ADMIN_EMAIL"], ph, "admin"))
+        if len(os.environ["ADMIN_PASSWORD"]) < 8:
+            warnings.warn("ADMIN_PASSWORD tiene menos de 8 caracteres: no se creó el administrador.")
+        else:
+            ph = bcrypt.hashpw(os.environ["ADMIN_PASSWORD"].encode(), bcrypt.gensalt()).decode()
+            cur.execute("INSERT OR IGNORE INTO usuarios (nombre,correo,password_hash,rol) VALUES (?,?,?,?)",
+                        ("Administrador", os.environ["ADMIN_EMAIL"].strip().lower(), ph, "admin"))
+    if cur.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0] == 0:
+        warnings.warn("No hay ningún usuario: define ADMIN_EMAIL y ADMIN_PASSWORD para crear el administrador inicial.")
     conn.commit(); conn.close()
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
