@@ -159,8 +159,8 @@ Desarrollado como proyecto de gestión y monitoreo de producción
 |---|---|
 | `SECRET_KEY` | Clave para firmar los tokens JWT (mínimo 32 caracteres). **Obligatoria en producción.** |
 | `ALLOWED_ORIGINS` | URL(s) del frontend permitidas por CORS, separadas por coma. Ej: `https://tachyon.pages.dev` |
-| `SEED_DEMO_USERS` | `0` para no crear los usuarios de demostración (por defecto se crean). |
-| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Si se definen, crean el usuario administrador inicial. |
+| `SEED_DEMO_USERS` | `1` crea cuentas de demostración con contraseñas públicas. **Solo para desarrollo local;** por defecto no se crean. |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Crean el administrador inicial (contraseña de 8+ caracteres). **Necesarias** si no usas cuentas de demostración. |
 
 **Frontend (build)**
 
