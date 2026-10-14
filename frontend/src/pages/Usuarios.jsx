@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import api from '../services/api'
 import { useAuth } from '../context/AuthContext'
+import EstadoSistema from '../components/EstadoSistema'
 
 // Solo administradores: crear cuentas (correo + contraseña temporal) y activar/desactivar.
 export default function Usuarios() {
@@ -47,6 +48,7 @@ export default function Usuarios() {
       </header>
 
       <main className="flex-1 overflow-y-auto p-6 space-y-5">
+        <EstadoSistema />
         <div className="card">
           <h2 className="text-sm font-semibold text-gray-900 mb-4">Nueva cuenta</h2>
           <form onSubmit={crear} className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
