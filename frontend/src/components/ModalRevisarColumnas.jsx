@@ -12,7 +12,7 @@ const ETIQUETA_ROL = {
 }
 
 // Pantalla de revisión: el sistema propone el tipo de cada columna y la persona lo corrige antes de guardar.
-export default function ModalRevisarColumnas({ analisis: inicial, onCancelar, onGuardado }) {
+export default function ModalRevisarColumnas({ analisis: inicial, proyectoId = null, onCancelar, onGuardado }) {
   const [analisis, setAnalisis] = useState(inicial)
   const [cols, setCols] = useState(inicial.columnas)
   const [filaEnc, setFilaEnc] = useState(inicial.fila_encabezado + 1)   // se muestra desde 1
@@ -47,7 +47,7 @@ export default function ModalRevisarColumnas({ analisis: inicial, onCancelar, on
       const r = await api.post(`/datasets/${analisis.archivo_id}/confirmar`, {
         hoja: analisis.hoja, fila_encabezado: analisis.fila_encabezado,
         columnas: cols.map(c => ({ nombre: c.nombre, rol: c.rol, nombre_mostrar: c.nombre_mostrar })),
-        guardar_plantilla: guardarPlantilla, nombre_plantilla: nombrePlantilla,
+        guardar_plantilla: guardarPlantilla, nombre_plantilla: nombrePlantilla, proyecto_id: proyectoId,
       })
       onGuardado(r.data)
     } catch (e) {
