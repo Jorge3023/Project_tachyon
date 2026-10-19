@@ -7,7 +7,6 @@ import Archivos from './pages/Archivos'
 import ElegirUsername from './pages/ElegirUsername'
 import Usuarios from './pages/Usuarios'
 import VerDatos from './pages/VerDatos'
-import { LineaPage, ReportesPage } from './pages/Placeholders'
 
 function PrivateRoute({ children }) {
   const { usuario, cargando } = useAuth()
@@ -53,16 +52,6 @@ function AppRoutes() {
       <Route path="/usuarios" element={
         <PrivateRoute>
           <AdminRoute><AppLayout><Usuarios /></AppLayout></AdminRoute>
-        </PrivateRoute>
-      } />
-      <Route path="/reportes" element={
-        <PrivateRoute>
-          <AppLayout><ReportesPage /></AppLayout>
-        </PrivateRoute>
-      } />
-      <Route path="/linea/:id" element={
-        <PrivateRoute>
-          <AppLayout><LineaPage /></AppLayout>
         </PrivateRoute>
       } />
 

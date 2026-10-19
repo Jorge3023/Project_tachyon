@@ -1,8 +1,6 @@
 # Project_Tachyon
 
-Aplicación web para monitoreo y gestión de líneas de producción.
-
-Incluye autenticación de usuarios, dashboard con métricas visuales y módulo de carga de archivos Excel preparado para futuras funcionalidades de análisis y procesamiento de datos.
+Plataforma web para analizar **cualquier Excel o CSV**: sube un archivo, el sistema detecta el tipo de cada columna, tú lo revisas y queda guardado de forma privada, listo para consultarlo, compartirlo en solo lectura y (próximamente) armar dashboards a tu medida y exportarlos.
 
 ---
 
@@ -75,10 +73,11 @@ http://localhost:5173
 
 ## ✨ Funcionalidades actuales
 
-- Inicio de sesión de usuarios.
-- Dashboard con indicadores visuales.
-- Métricas por día, semana y mes.
-- Carga de archivos Excel.
+- Inicio de sesión con cuentas creadas por el administrador.
+- Subida de cualquier Excel o CSV con detección automática de columnas y revisión manual.
+- Plantillas guardadas: un archivo con las mismas columnas se interpreta solo.
+- Visor de datos por páginas con resumen por columna.
+- Datos privados por usuario y compartir por correo (solo lectura).
 - API REST desarrollada con FastAPI.
 - Interfaz desarrollada con React y Tailwind CSS.
 
@@ -91,9 +90,10 @@ produccion-app/
 │
 ├── backend/
 │   ├── main.py
-│   ├── excel_parser.py
+│   ├── db.py
+│   ├── storage.py
 │   ├── requirements.txt
-│   └── produccion.db (se genera automáticamente)
+│   └── produccion.db (solo en desarrollo; se genera automáticamente)
 │
 ├── frontend/
 │   ├── src/
@@ -115,26 +115,24 @@ produccion-app/
 
 ## Próximas funcionalidades
 
-- [x] Procesamiento automático de archivos Excel.
-- [ ] Generación de reportes PDF.
-- [ ] Gestión avanzada de usuarios.
-- [ ] Filtros por rango de fechas.
-- [ ] Indicadores por línea de producción.
-- [ ] Exportación de métricas.
+- [x] Detección automática de columnas en cualquier Excel/CSV.
+- [x] Plantillas, privacidad por usuario y compartir por correo.
+- [ ] Editor de dashboards con gráficas propuestas según el tipo de columnas.
+- [ ] Pantalla de exportación (imagen, PDF, PowerPoint, CSV/Excel).
+- [ ] Clasificadores y análisis asistido.
 
 ---
 
 ## 📝 Notas
 
 - La base de datos SQLite se crea automáticamente durante la primera ejecución del backend.
-- Los archivos Excel cargados actualmente se almacenan para futuras funcionalidades de procesamiento.
-- Este proyecto se encuentra en desarrollo y puede recibir cambios en la estructura y funcionalidades.
+- - Este proyecto se encuentra en desarrollo y puede recibir cambios en la estructura y funcionalidades.
 
 ---
 
 ## 👨‍💻 Autor
 
-Desarrollado como proyecto de gestión y monitoreo de producción
+Proyecto de análisis de datos de propósito general (Excel/CSV).
 
 
 ## 🗺️ Imagenes
@@ -177,7 +175,7 @@ Desarrollado como proyecto de gestión y monitoreo de producción
 ## Usuarios, privacidad y compartir
 
 - **Cuentas:** el administrador crea cuentas desde *Usuarios* (correo + contraseña temporal). En su primer ingreso, cada persona elige su **nombre de usuario** (único, de 3 a 20 caracteres, no se cambia después).
-- **Privacidad:** cada archivo (y lo que se calcula de él en el dashboard) es solo de quien lo subió. Ni el administrador ve los archivos de los demás.
+- **Privacidad:** cada archivo (y lo que se calcula de él) es solo de quien lo subió. Ni el administrador ve los archivos de los demás.
 - **Compartir:** el dueño puede compartir un archivo por correo electrónico (solo lectura). Si la persona aún no tiene cuenta, lo verá cuando entre con ese correo. Se puede dejar de compartir en cualquier momento.
 
 ## Cualquier Excel o CSV (datasets genéricos)
@@ -194,7 +192,7 @@ Los datasets siguen las mismas reglas de privacidad: solo los ve su dueño y qui
 
 ## Configurar Supabase (producción)
 
-La aplicación guarda **usuarios, archivos, plantillas y permisos en PostgreSQL** y los **datos limpios, reportes y borradores en Supabase Storage** (formato Parquet). Sin estas variables usa SQLite y el disco local, solo apropiados para desarrollo.
+La aplicación guarda **usuarios, archivos, plantillas y permisos en PostgreSQL** y los **datos limpios y borradores en Supabase Storage** (formato Parquet). Sin estas variables usa SQLite y el disco local, solo apropiados para desarrollo.
 
 1. En [supabase.com](https://supabase.com) crea un proyecto. Anota la contraseña de la base de datos en un gestor de contraseñas.
 2. **Storage → New bucket**: nombre `datasets`, **privado** (sin marcar "Public bucket").
@@ -217,8 +215,6 @@ Notas:
 |---|---|
 | **PostgreSQL** (pequeño) | Usuarios (contraseña cifrada), una fila por archivo con sus metadatos y resumen, plantillas y con quién se comparte cada archivo |
 | **Storage** `datasets/{id}.parquet` | Los datos limpios de cada Excel/CSV genérico, en grupos de 10 000 filas (Parquet + zstd) |
-| **Storage** `reportes/{id}_reporte.parquet` | El reporte del flujo de producción que alimenta el dashboard |
-| **Storage** `reportes/{id}_reporte.xlsx` | El Excel de descarga del flujo de producción |
 | **Storage** `borradores/{id}.src` | El archivo original, solo mientras revisas las columnas (se borra al confirmar o cancelar) |
 
-Al abrir **Ver datos** solo se lee del Parquet la página pedida (no el archivo completo) y el resumen por columna se calcula una sola vez, al confirmar. Los reportes de producción se guardan en una caché en memoria (`REPORTES_CACHE_MAX`, 128 por defecto) para que el dashboard no los baje del Storage en cada consulta. Los reportes antiguos guardados en la columna `reporte_json` se siguen leyendo.
+Al abrir **Ver datos** solo se lee del Parquet la página pedida (no el archivo completo) y el resumen por columna se calcula una sola vez, al confirmar.
