@@ -209,3 +209,16 @@ Notas:
 - Si la clave nueva fallara en Storage, la clave antigua `service_role` (empieza con `eyJ`) también funciona en `SUPABASE_SECRET_KEY`.
 - Plan gratis de Supabase: 500 MB de base de datos, 1 GB de archivos y el proyecto se pausa tras una semana sin uso.
 - Los datos que ya estuvieran en el SQLite de Render **no se migran** (ese disco es efímero).
+- `ADMIN_EMAIL` / `ADMIN_PASSWORD` solo crean el administrador **si no existe**: cambiar `ADMIN_PASSWORD` después no cambia la contraseña de una cuenta ya creada.
+
+### Dónde se guarda cada cosa
+
+| Dónde | Qué |
+|---|---|
+| **PostgreSQL** (pequeño) | Usuarios (contraseña cifrada), una fila por archivo con sus metadatos y resumen, plantillas y con quién se comparte cada archivo |
+| **Storage** `datasets/{id}.parquet` | Los datos limpios de cada Excel/CSV genérico, en grupos de 10 000 filas (Parquet + zstd) |
+| **Storage** `reportes/{id}_reporte.parquet` | El reporte del flujo de producción que alimenta el dashboard |
+| **Storage** `reportes/{id}_reporte.xlsx` | El Excel de descarga del flujo de producción |
+| **Storage** `borradores/{id}.src` | El archivo original, solo mientras revisas las columnas (se borra al confirmar o cancelar) |
+
+Al abrir **Ver datos** solo se lee del Parquet la página pedida (no el archivo completo) y el resumen por columna se calcula una sola vez, al confirmar. Los reportes de producción se guardan en una caché en memoria (`REPORTES_CACHE_MAX`, 128 por defecto) para que el dashboard no los baje del Storage en cada consulta. Los reportes antiguos guardados en la columna `reporte_json` se siguen leyendo.
