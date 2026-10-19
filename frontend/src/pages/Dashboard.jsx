@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import api from '../services/api'
+import { useProyectos } from '../context/ProyectosContext'
 
 function MetricCard({ label, value, sub, color = 'gray', icon }) {
   const colors = {
@@ -44,6 +45,7 @@ const iconoCompartir = (
 export default function Dashboard() {
   const { usuario } = useAuth()
   const navigate = useNavigate()
+  const { proyectos } = useProyectos()
   const [archivos, setArchivos] = useState([])
   const [cargando, setCargando] = useState(true)
   const [error,    setError]    = useState(false)
@@ -70,7 +72,7 @@ export default function Dashboard() {
     <div className="flex-1 flex flex-col overflow-hidden">
       <header className="bg-white border-b border-gray-100 px-6 py-4">
         <h1 className="text-base font-semibold text-gray-900">
-          {primerNombre ? `Hola, ${primerNombre}` : 'Inicio'}
+          {primerNombre ? `Hola, ${primerNombre}` : 'Dashboard'}
         </h1>
         <p className="text-xs text-gray-400 mt-0.5">{hoy}</p>
       </header>
@@ -132,6 +134,21 @@ export default function Dashboard() {
             </div>
           )}
         </div>
+
+        {proyectos.length > 0 && (
+          <div className="card">
+            <h2 className="text-sm font-semibold text-gray-900 mb-3">Tus proyectos</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {proyectos.map(p => (
+                <button key={p.id} onClick={() => navigate(`/proyecto/${p.id}`)}
+                  className="text-left border border-gray-100 rounded-lg px-4 py-3 hover:border-brand-300 hover:bg-brand-50/30 transition-colors">
+                  <p className="text-sm font-medium text-gray-900 truncate">{p.nombre}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">{p.num_archivos} {p.num_archivos === 1 ? 'archivo' : 'archivos'}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="card bg-gray-50 border-dashed">
           <h2 className="text-sm font-semibold text-gray-700">Dashboards a tu medida</h2>

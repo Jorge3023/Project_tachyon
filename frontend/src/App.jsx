@@ -7,6 +7,8 @@ import Archivos from './pages/Archivos'
 import ElegirUsername from './pages/ElegirUsername'
 import Usuarios from './pages/Usuarios'
 import VerDatos from './pages/VerDatos'
+import Proyecto from './pages/Proyecto'
+import { ProyectosProvider } from './context/ProyectosContext'
 
 function PrivateRoute({ children }) {
   const { usuario, cargando } = useAuth()
@@ -49,6 +51,11 @@ function AppRoutes() {
           <AppLayout><VerDatos /></AppLayout>
         </PrivateRoute>
       } />
+      <Route path="/proyecto/:id" element={
+        <PrivateRoute>
+          <AppLayout><Proyecto /></AppLayout>
+        </PrivateRoute>
+      } />
       <Route path="/usuarios" element={
         <PrivateRoute>
           <AdminRoute><AppLayout><Usuarios /></AppLayout></AdminRoute>
@@ -65,7 +72,9 @@ export default function App() {
   return (
     <BrowserRouter basename={import.meta.env.BASE_URL}>
       <AuthProvider>
-        <AppRoutes />
+        <ProyectosProvider>
+          <AppRoutes />
+        </ProyectosProvider>
       </AuthProvider>
     </BrowserRouter>
   )

@@ -77,7 +77,8 @@ def init_db():
                 "ON usuarios(lower(username)) WHERE username IS NOT NULL")
     # Archivos genéricos (cualquier Excel/CSV): tipo, esquema de columnas confirmado y huella de columnas
     cols_a = db.columnas(conn, "archivos")
-    for nueva, ddl in (("tipo", "TEXT DEFAULT 'produccion'"), ("esquema_json", "TEXT"), ("huella", "TEXT")):
+    for nueva, ddl in (("tipo", "TEXT DEFAULT 'produccion'"), ("esquema_json", "TEXT"), ("huella", "TEXT"),
+                       ("proyecto_id", "INTEGER")):
         if nueva not in cols_a:
             cur.execute(f"ALTER TABLE archivos ADD COLUMN {nueva} {ddl}")
     cur.execute(db.ddl("""CREATE TABLE IF NOT EXISTS plantillas (
@@ -85,6 +86,12 @@ def init_db():
         owner_id INTEGER NOT NULL, nombre TEXT NOT NULL, huella TEXT NOT NULL,
         config_json TEXT NOT NULL, creado_en {TS},
         UNIQUE(owner_id, huella))"""))
+    # Proyectos: carpetas personales para agrupar archivos (cada quien ve solo los suyos)
+    cur.execute(db.ddl("""CREATE TABLE IF NOT EXISTS proyectos (
+        id {PK},
+        owner_id INTEGER NOT NULL, nombre TEXT NOT NULL, creado_en {TS})"""))
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_proyectos_owner ON proyectos(owner_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_archivos_proyecto ON archivos(proyecto_id)")
     # Archivos compartidos con otras personas por correo (solo lectura)
     cur.execute(db.ddl("""CREATE TABLE IF NOT EXISTS comparticiones (
         id {PK},
@@ -215,11 +222,12 @@ def _archivo_propio(conn, archivo_id, u):
     return a
 
 @app.get("/archivos")
-def listar_archivos(origen: str = "todos", u=Depends(get_usuario_actual)):
-    """Datasets visibles para el usuario. origen: 'mios' | 'compartidos' | 'todos'."""
+def listar_archivos(origen: str = "todos", proyecto: Optional[str] = None, u=Depends(get_usuario_actual)):
+    """Datasets visibles para el usuario. origen: 'mios' | 'compartidos' | 'todos'.
+    proyecto: id de uno de MIS proyectos, o 'sin' para los que no están en ninguno (solo archivos propios)."""
     conn = get_db()
     cond, params = _cond_visible(u)
-    q = f"""SELECT a.id, a.nombre, a.filas, a.estado, a.tipo, a.subido_por, a.subido_en,
+    q = f"""SELECT a.id, a.nombre, a.filas, a.estado, a.tipo, a.subido_por, a.subido_en, a.proyecto_id,
                    COALESCE(us.username, us.nombre) AS subido_por_nombre,
                    (a.subido_por=?) AS es_mio,
                    (SELECT COUNT(*) FROM comparticiones c2 WHERE c2.archivo_id=a.id) AS num_compartidos
@@ -230,14 +238,110 @@ def listar_archivos(origen: str = "todos", u=Depends(get_usuario_actual)):
         q += " AND a.subido_por=?"; params.append(u["id"])
     elif origen == "compartidos":
         q += " AND a.subido_por<>?"; params.append(u["id"])
+    if proyecto == "sin":
+        q += " AND a.subido_por=? AND a.proyecto_id IS NULL"; params.append(u["id"])
+    elif proyecto:
+        if not proyecto.isdigit():
+            raise HTTPException(status_code=422, detail="Proyecto no válido")
+        q += " AND a.subido_por=? AND a.proyecto_id=?"; params += [u["id"], int(proyecto)]
     q += " ORDER BY a.subido_en DESC LIMIT 50"
     rows = conn.execute(q, params).fetchall(); conn.close()
     out = []
     for r in rows:
         d = dict(r); d["es_mio"] = bool(d["es_mio"])
-        if not d["es_mio"]: d["num_compartidos"] = None   # solo el dueño ve con cuántos se comparte
+        if not d["es_mio"]:
+            d["num_compartidos"] = None   # solo el dueño ve con cuántos se comparte
+            d["proyecto_id"] = None       # los proyectos son personales de cada quien
         out.append(d)
     return out
+
+# ── Proyectos (carpetas personales de archivos) ─────────────────────────────────
+MAX_PROYECTOS = 50
+
+class ProyectoIn(BaseModel):
+    nombre: str
+
+class MoverIn(BaseModel):
+    proyecto_id: Optional[int] = None
+
+def _nombre_proyecto(texto):
+    n = " ".join((texto or "").split())
+    if not 1 <= len(n) <= 40:
+        raise HTTPException(status_code=422, detail="El nombre del proyecto debe tener entre 1 y 40 caracteres")
+    return n
+
+def _proyecto_propio(conn, proyecto_id, u):
+    p = conn.execute("SELECT * FROM proyectos WHERE id=? AND owner_id=?", (proyecto_id, u["id"])).fetchone()
+    if not p:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    return p
+
+def _nombre_libre(conn, nombre, u, excepto=None):
+    for r in conn.execute("SELECT id, nombre FROM proyectos WHERE owner_id=?", (u["id"],)).fetchall():
+        if r["nombre"].lower() == nombre.lower() and r["id"] != excepto:
+            raise HTTPException(status_code=409, detail="Ya tienes un proyecto con ese nombre")
+
+@app.get("/proyectos")
+def listar_proyectos(u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        rows = conn.execute("""SELECT p.id, p.nombre, p.creado_en,
+                   (SELECT COUNT(*) FROM archivos a WHERE a.proyecto_id=p.id AND a.subido_por=p.owner_id
+                    AND a.estado='procesado' AND a.tipo='generico') AS num_archivos
+                FROM proyectos p WHERE p.owner_id=? ORDER BY lower(p.nombre)""", (u["id"],)).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+@app.post("/proyectos")
+def crear_proyecto(datos: ProyectoIn, u=Depends(get_usuario_actual)):
+    nombre = _nombre_proyecto(datos.nombre)
+    conn = get_db()
+    try:
+        _nombre_libre(conn, nombre, u)
+        if conn.execute("SELECT COUNT(*) AS n FROM proyectos WHERE owner_id=?", (u["id"],)).fetchone()["n"] >= MAX_PROYECTOS:
+            raise HTTPException(status_code=422, detail=f"Máximo {MAX_PROYECTOS} proyectos")
+        cur = conn.execute("INSERT INTO proyectos (owner_id, nombre) VALUES (?,?)", (u["id"], nombre))
+        pid = cur.lastrowid; conn.commit()
+    finally:
+        conn.close()
+    return {"id": pid, "nombre": nombre, "num_archivos": 0}
+
+@app.patch("/proyectos/{proyecto_id}")
+def renombrar_proyecto(proyecto_id: int, datos: ProyectoIn, u=Depends(get_usuario_actual)):
+    nombre = _nombre_proyecto(datos.nombre)
+    conn = get_db()
+    try:
+        _proyecto_propio(conn, proyecto_id, u)
+        _nombre_libre(conn, nombre, u, excepto=proyecto_id)
+        conn.execute("UPDATE proyectos SET nombre=? WHERE id=?", (nombre, proyecto_id)); conn.commit()
+    finally:
+        conn.close()
+    return {"id": proyecto_id, "nombre": nombre}
+
+@app.delete("/proyectos/{proyecto_id}")
+def borrar_proyecto(proyecto_id: int, u=Depends(get_usuario_actual)):
+    """Borra el proyecto, NO sus archivos: quedan sin proyecto."""
+    conn = get_db()
+    try:
+        _proyecto_propio(conn, proyecto_id, u)
+        conn.execute("UPDATE archivos SET proyecto_id=NULL WHERE proyecto_id=? AND subido_por=?", (proyecto_id, u["id"]))
+        conn.execute("DELETE FROM proyectos WHERE id=?", (proyecto_id,)); conn.commit()
+    finally:
+        conn.close()
+    return {"mensaje": "Proyecto eliminado; sus archivos siguen en Mis archivos"}
+
+@app.put("/archivos/{archivo_id}/proyecto")
+def mover_a_proyecto(archivo_id: int, datos: MoverIn, u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        _archivo_propio(conn, archivo_id, u)
+        if datos.proyecto_id is not None:
+            _proyecto_propio(conn, datos.proyecto_id, u)
+        conn.execute("UPDATE archivos SET proyecto_id=? WHERE id=?", (datos.proyecto_id, archivo_id)); conn.commit()
+    finally:
+        conn.close()
+    return {"archivo_id": archivo_id, "proyecto_id": datos.proyecto_id}
 
 # ── Compartir por correo (solo el dueño)
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -412,6 +516,7 @@ class ConfirmarIn(BaseModel):
     columnas: List[ColumnaIn]
     guardar_plantilla: bool = False
     nombre_plantilla: Optional[str] = None
+    proyecto_id: Optional[int] = None     # proyecto donde guardar el archivo (opcional)
 
 def _json_seguro(obj):
     """Convierte tipos de numpy/pandas a tipos JSON normales."""
@@ -531,6 +636,8 @@ def confirmar_dataset(archivo_id: int, datos: ConfirmarIn, u=Depends(get_usuario
     conn = get_db()
     try:
         a = _borrador_propio(conn, archivo_id, u)
+        if datos.proyecto_id is not None:
+            _proyecto_propio(conn, datos.proyecto_id, u)
         contenido = _leer_borrador(archivo_id)
         for c in datos.columnas:
             if c.rol not in detector.ROLES:
@@ -560,10 +667,10 @@ def confirmar_dataset(archivo_id: int, datos: ConfirmarIn, u=Depends(get_usuario
             # El resumen por columna se calcula una sola vez, aquí, y se guarda (es pequeño)
             resumen = _json_seguro(detector.resumen_columnas(
                 limpio, [{"nombre": c["nombre"], "rol": c["rol"]} for c in esquema]))
-            conn.execute("""UPDATE archivos SET estado='procesado', filas=?, esquema_json=?, huella=?, resumen_json=?
-                            WHERE id=?""",
+            conn.execute("""UPDATE archivos SET estado='procesado', filas=?, esquema_json=?, huella=?, resumen_json=?,
+                            proyecto_id=? WHERE id=?""",
                          (int(len(limpio)), json.dumps({"hoja": r["hoja"], "fila_encabezado": r["fila_encabezado"],
-                                                        "columnas": esquema}), hf, json.dumps(resumen), archivo_id))
+                                                        "columnas": esquema}), hf, json.dumps(resumen), datos.proyecto_id, archivo_id))
             plantilla_guardada = False
             if datos.guardar_plantilla:
                 cfg = {"columnas": [{"nombre_origen": c["nombre"], "rol": c["rol"], "nombre_mostrar": c["nombre_mostrar"]}

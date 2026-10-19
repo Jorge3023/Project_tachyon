@@ -76,6 +76,7 @@ http://localhost:5173
 - Inicio de sesión con cuentas creadas por el administrador.
 - Subida de cualquier Excel o CSV con detección automática de columnas y revisión manual.
 - Plantillas guardadas: un archivo con las mismas columnas se interpreta solo.
+- **Proyectos**: carpetas personales para agrupar archivos (se crean con “+” en la barra lateral; borrar un proyecto no borra sus archivos).
 - Visor de datos por páginas con resumen por columna.
 - Datos privados por usuario y compartir por correo (solo lectura).
 - API REST desarrollada con FastAPI.
@@ -117,7 +118,7 @@ produccion-app/
 
 - [x] Detección automática de columnas en cualquier Excel/CSV.
 - [x] Plantillas, privacidad por usuario y compartir por correo.
-- [ ] Editor de dashboards con gráficas propuestas según el tipo de columnas.
+- [ ] Editor de dashboards (general y por proyecto) con gráficas propuestas según el tipo de columnas.
 - [ ] Pantalla de exportación (imagen, PDF, PowerPoint, CSV/Excel).
 - [ ] Clasificadores y análisis asistido.
 
@@ -187,7 +188,7 @@ En **Mis archivos → Subir cualquier Excel o CSV** puedes subir `.xlsx`, `.xls`
 3. Al guardar se limpian los valores (`$1,234.50`, `1.234,5`, `17,3%`, fechas `dd/mm/aaaa`, números de serie de Excel) y se guarda el dataset tipado.
 4. Si marcas **guardar como plantilla**, cualquier archivo futuro con las mismas columnas (aunque cambie el orden o se agregue alguna) se interpreta solo.
 
-Los datasets siguen las mismas reglas de privacidad: solo los ve su dueño y quienes él elija por correo. Endpoints: `POST /datasets/analizar`, `GET /datasets/{id}/analisis`, `POST /datasets/{id}/confirmar`, `GET /datasets/{id}/datos`, `GET|DELETE /plantillas`.
+Los datasets siguen las mismas reglas de privacidad: solo los ve su dueño y quienes él elija por correo. Endpoints: `GET|POST /proyectos`, `PATCH|DELETE /proyectos/{id}`, `PUT /archivos/{id}/proyecto`, `POST /datasets/analizar`, `GET /datasets/{id}/analisis`, `POST /datasets/{id}/confirmar`, `GET /datasets/{id}/datos`, `GET|DELETE /plantillas`.
 
 
 ## Configurar Supabase (producción)
