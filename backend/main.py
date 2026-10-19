@@ -4,7 +4,8 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse, JSONResponse
 from datetime import datetime, timedelta
 from typing import Optional, List
-import jwt, bcrypt, json, os, io, math, warnings, re
+import jwt, bcrypt, json, os, io, math, warnings, re, threading
+from collections import OrderedDict
 from pydantic import BaseModel
 from excel_parser import procesar_excel
 import detector
@@ -326,13 +327,13 @@ async def upload_archivo(
 
         storage.put(f"reportes/{archivo_id}_reporte.xlsx", excel_out,
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        # El reporte completo va al Storage (Parquet), no a la base de datos: en la base solo quedan metadatos.
+        _guardar_reporte(archivo_id, reporte)
 
         conn.execute("""UPDATE archivos
-                        SET filas=?,estado='procesado',reporte_json=?,resumen_json=?,equipo=?
+                        SET filas=?,estado='procesado',reporte_json=NULL,resumen_json=?,equipo=?
                         WHERE id=?""",
-                     (resumen["total_registros"],
-                      reporte.to_json(orient="records", date_format="iso"),
-                      json.dumps(resumen), equipo, archivo_id))
+                     (resumen["total_registros"], json.dumps(resumen), equipo, archivo_id))
         conn.commit(); conn.close()
         return {"mensaje": f"✓ '{file.filename}' procesado correctamente.",
                 "archivo_id": archivo_id, "resumen": resumen}
@@ -343,6 +344,9 @@ async def upload_archivo(
         print(f"=== Error mensaje: {str(e)} ===")
         conn.execute("UPDATE archivos SET estado='error' WHERE id=?", (archivo_id,))
         conn.commit(); conn.close()
+        for ruta in (f"reportes/{archivo_id}_reporte.xlsx", f"reportes/{archivo_id}_reporte.parquet"):
+            try: storage.delete(ruta)       # no dejar archivos huérfanos de un procesamiento fallido
+            except Exception: pass
         raise HTTPException(status_code=422, detail=f"Error al procesar: {str(e)}")
 
 @app.get("/archivos/{archivo_id}/descargar")
@@ -368,9 +372,10 @@ def ver_reporte(archivo_id: int, u=Depends(get_usuario_actual)):
         row = _archivo_con_acceso(conn, archivo_id, u)
     finally:
         conn.close()
-    if not row["reporte_json"]:
+    df = _leer_reporte(archivo_id, row["reporte_json"])
+    if df is None:
         raise HTTPException(status_code=404, detail="Reporte no disponible")
-    return {"reporte": json.loads(row["reporte_json"]),
+    return {"reporte": json.loads(df.to_json(orient="records", date_format="iso")),
             "resumen": json.loads(row["resumen_json"]) if row["resumen_json"] else {}}
 
 @app.delete("/archivos/{archivo_id}")
@@ -386,7 +391,9 @@ def eliminar_archivo(archivo_id: int, u=Depends(get_usuario_actual)):
     conn.commit()
     conn.close()
 
-    for ruta in (f"reportes/{archivo_id}_reporte.xlsx", f"datasets/{archivo_id}.parquet", f"borradores/{archivo_id}.src"):
+    _olvidar_reporte(archivo_id)
+    for ruta in (f"reportes/{archivo_id}_reporte.xlsx", f"reportes/{archivo_id}_reporte.parquet",
+                 f"datasets/{archivo_id}.parquet", f"borradores/{archivo_id}.src"):
         storage.delete(ruta)
 
     return {"mensaje": "Archivo eliminado correctamente", "archivo_id": archivo_id}
@@ -406,20 +413,70 @@ def _limpiar_registros(registros):
     """Reemplaza NaN/inf por None en una lista de dicts (salida de DataFrame.to_dict)."""
     return [{k: (_num(v) if isinstance(v, float) else v) for k, v in r.items()} for r in registros]
 
+# ── Reportes de producción en el Storage (Parquet) ────────────────────────────
+# Cada reporte se guarda como reportes/{id}_reporte.parquet. La columna archivos.reporte_json solo la usan
+# las filas antiguas (anteriores a este cambio): si existe, se lee de ahí como respaldo.
+# Los reportes no cambian después de procesarse, así que se guardan en una caché pequeña en memoria para que
+# cada consulta del dashboard no vuelva a bajarlos del Storage. Se vacía al borrar un archivo.
+_REPORTES_CACHE_MAX = int(os.getenv("REPORTES_CACHE_MAX", "128"))
+_reportes_cache = OrderedDict()
+_reportes_lock = threading.Lock()
+
+def _guardar_reporte(archivo_id: int, reporte):
+    buf = io.BytesIO()
+    try:
+        reporte.to_parquet(buf, engine="pyarrow", compression="zstd", index=False)
+    except Exception:
+        # columnas con tipos mezclados que Parquet no admite: se guardan como texto
+        r = reporte.copy()
+        for c in r.columns:
+            if r[c].dtype == object:
+                r[c] = r[c].astype(str)
+        buf = io.BytesIO()
+        r.to_parquet(buf, engine="pyarrow", compression="zstd", index=False)
+    storage.put(f"reportes/{archivo_id}_reporte.parquet", buf.getvalue(), "application/octet-stream")
+
+def _olvidar_reporte(archivo_id: int):
+    with _reportes_lock:
+        _reportes_cache.pop(archivo_id, None)
+
+def _leer_reporte(archivo_id: int, json_antiguo=None):
+    """DataFrame del reporte de un archivo (copia propia), o None si no existe."""
+    import pandas as pd
+    with _reportes_lock:
+        df = _reportes_cache.get(archivo_id)
+        if df is not None:
+            _reportes_cache.move_to_end(archivo_id)
+            return df.copy()
+    try:
+        df = pd.read_parquet(io.BytesIO(storage.get(f"reportes/{archivo_id}_reporte.parquet")), engine="pyarrow")
+    except FileNotFoundError:
+        if not json_antiguo:
+            return None
+        df = pd.read_json(io.StringIO(json_antiguo))
+    with _reportes_lock:
+        _reportes_cache[archivo_id] = df
+        while len(_reportes_cache) > _REPORTES_CACHE_MAX:
+            _reportes_cache.popitem(last=False)
+    return df.copy()
+
 def _get_todos_reportes(linea: Optional[str], u):
     """Carga y une los reportes procesados que el usuario puede ver (suyos + compartidos con él)."""
     import pandas as pd
     conn = get_db()
     cond, params = _cond_visible(u, "archivos")
-    q = f"SELECT reporte_json, linea FROM archivos WHERE estado='procesado' AND reporte_json IS NOT NULL AND {cond}"
+    q = (f"SELECT id, reporte_json, linea FROM archivos WHERE estado='procesado' "
+         f"AND COALESCE(tipo,'produccion') <> 'generico' AND {cond}")
     if linea:
         q += " AND linea=?"; params.append(linea)
-    rows = conn.execute(q, params).fetchall(); conn.close()
+    rows = conn.execute(q + " ORDER BY id", params).fetchall(); conn.close()
     if not rows: return pd.DataFrame()
     dfs = []
     for row in rows:
         try:
-            df = pd.read_json(io.StringIO(row["reporte_json"]))
+            df = _leer_reporte(row["id"], row["reporte_json"])
+            if df is None:
+                continue
             df["linea"] = row["linea"]
             dfs.append(df)
         except Exception:
@@ -782,13 +839,18 @@ def confirmar_dataset(archivo_id: int, datos: ConfirmarIn, u=Depends(get_usuario
         esquema = [{"nombre": nombre_final, "rol": c["rol"], "origen": c["nombre"]}
                    for nombre_final, c in zip(limpio.columns, activas)]
         buf = io.BytesIO()
-        limpio.to_parquet(buf, engine="pyarrow", compression="zstd", index=False)
+        # Grupos de filas de tamaño fijo: así "Ver datos" puede leer solo la página que se pide
+        limpio.to_parquet(buf, engine="pyarrow", compression="zstd", index=False, row_group_size=FILAS_POR_GRUPO)
         storage.put(f"datasets/{archivo_id}.parquet", buf.getvalue(), "application/octet-stream")
         try:
             hf = detector.huella([c["nombre"] for c in columnas])
-            conn.execute("""UPDATE archivos SET estado='procesado', filas=?, esquema_json=?, huella=? WHERE id=?""",
+            # El resumen por columna se calcula una sola vez, aquí, y se guarda (es pequeño)
+            resumen = _json_seguro(detector.resumen_columnas(
+                limpio, [{"nombre": c["nombre"], "rol": c["rol"]} for c in esquema]))
+            conn.execute("""UPDATE archivos SET estado='procesado', filas=?, esquema_json=?, huella=?, resumen_json=?
+                            WHERE id=?""",
                          (int(len(limpio)), json.dumps({"hoja": r["hoja"], "fila_encabezado": r["fila_encabezado"],
-                                                        "columnas": esquema}), hf, archivo_id))
+                                                        "columnas": esquema}), hf, json.dumps(resumen), archivo_id))
             plantilla_guardada = False
             if datos.guardar_plantilla:
                 cfg = {"columnas": [{"nombre_origen": c["nombre"], "rol": c["rol"], "nombre_mostrar": c["nombre_mostrar"]}
@@ -808,16 +870,42 @@ def confirmar_dataset(archivo_id: int, datos: ConfirmarIn, u=Depends(get_usuario
     return {"mensaje": f"'{a['nombre']}' guardado: {len(limpio):,} filas, {len(esquema)} columnas.",
             "archivo_id": archivo_id, "filas": int(len(limpio)), "plantilla_guardada": plantilla_guardada}
 
-def _cargar_dataset(a):
+FILAS_POR_GRUPO = 10_000     # filas por grupo dentro de cada Parquet de datasets
+
+def _datos_dataset(a):
+    """(esquema, bytes del Parquet comprimido) de un dataset procesado; 404 si no está disponible."""
     esquema = json.loads(a["esquema_json"] or "{}").get("columnas", [])
     if a["tipo"] != "generico" or a["estado"] != "procesado" or not esquema:
         raise HTTPException(status_code=404, detail="Datos no disponibles")
-    import pandas as pd
     try:
-        df = pd.read_parquet(io.BytesIO(storage.get(f"datasets/{a['id']}.parquet")), engine="pyarrow")
+        return esquema, storage.get(f"datasets/{a['id']}.parquet")
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Datos no disponibles")
-    return df, esquema
+
+def _cargar_dataset(a):
+    """DataFrame completo del dataset. Cargarlo entero cuesta memoria: úsalo solo cuando haga falta todo."""
+    import pandas as pd
+    esquema, datos = _datos_dataset(a)
+    return pd.read_parquet(io.BytesIO(datos), engine="pyarrow"), esquema
+
+def _pagina_parquet(datos: bytes, ini: int, n: int):
+    """(total de filas, DataFrame con las filas [ini, ini+n)) leyendo solo los grupos de filas necesarios."""
+    import pyarrow.parquet as pq
+    pf = pq.ParquetFile(io.BytesIO(datos))
+    total = pf.metadata.num_rows
+    grupos, saltar, acumulado = [], 0, 0
+    for i in range(pf.metadata.num_row_groups):
+        filas_grupo = pf.metadata.row_group(i).num_rows
+        if acumulado + filas_grupo > ini and acumulado < ini + n:
+            if not grupos:
+                saltar = ini - acumulado
+            grupos.append(i)
+        acumulado += filas_grupo
+        if acumulado >= ini + n:
+            break
+    if not grupos:
+        return total, pf.schema_arrow.empty_table().to_pandas()
+    return total, pf.read_row_groups(grupos).slice(saltar, n).to_pandas()
 
 @app.get("/datasets/{archivo_id}/datos")
 def ver_dataset(archivo_id: int, pagina: int = Query(1, ge=1), por_pagina: int = Query(50, ge=1, le=200),
@@ -827,18 +915,24 @@ def ver_dataset(archivo_id: int, pagina: int = Query(1, ge=1), por_pagina: int =
         a = _archivo_con_acceso(conn, archivo_id, u)
     finally:
         conn.close()
-    df, esquema = _cargar_dataset(a)
+    esquema, datos = _datos_dataset(a)
     ini = (pagina - 1) * por_pagina
-    trozo = df.iloc[ini:ini + por_pagina].copy()
+    total, trozo = _pagina_parquet(datos, ini, por_pagina)
     for c in esquema:
         if c["rol"] == "fecha":
             trozo[c["nombre"]] = trozo[c["nombre"]].dt.strftime("%Y-%m-%d %H:%M").str.replace(" 00:00", "", regex=False)
     trozo = trozo.astype(object).where(trozo.notna(), None)
+    if a["resumen_json"]:
+        resumen = json.loads(a["resumen_json"])
+    else:   # datasets guardados antes de que el resumen se calculara al confirmar
+        import pandas as pd
+        resumen = _json_seguro(detector.resumen_columnas(
+            pd.read_parquet(io.BytesIO(datos), engine="pyarrow"),
+            [{"nombre": c["nombre"], "rol": c["rol"]} for c in esquema]))
     return _json_seguro({
         "archivo": {"id": a["id"], "nombre": a["nombre"], "es_mio": a["subido_por"] == u["id"]},
-        "columnas": esquema, "total": int(len(df)), "pagina": pagina, "por_pagina": por_pagina,
-        "filas": trozo.values.tolist(),
-        "resumen": detector.resumen_columnas(df, [{"nombre": c["nombre"], "rol": c["rol"]} for c in esquema]),
+        "columnas": esquema, "total": int(total), "pagina": pagina, "por_pagina": por_pagina,
+        "filas": trozo.values.tolist(), "resumen": resumen,
     })
 
 # ── Plantillas guardadas (privadas de cada usuario)
