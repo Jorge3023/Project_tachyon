@@ -106,8 +106,9 @@ export default function Proyecto() {
                     </p>
                   </div>
                   <button onClick={() => quitar(a)} className="btn-ghost text-xs">Quitar del proyecto</button>
-                  <button onClick={() => navigate(`/datos/${a.id}`)}
-                    className="btn-ghost text-brand-600 hover:text-brand-700 hover:bg-brand-50 text-xs">Ver datos</button>
+                  <button onClick={() => navigate(`/datos/${a.id}/dashboard`)}
+                    className="btn-ghost text-brand-600 hover:text-brand-700 hover:bg-brand-50 text-xs">Dashboard</button>
+                  <button onClick={() => navigate(`/datos/${a.id}`)} className="btn-ghost text-gray-500 text-xs">Ver datos</button>
                 </div>
               ))}
             </div>
@@ -115,9 +116,9 @@ export default function Proyecto() {
         </div>
 
         <div className="card bg-gray-50 border-dashed">
-          <h2 className="text-sm font-semibold text-gray-700">Dashboard del proyecto</h2>
+          <h2 className="text-sm font-semibold text-gray-700">Dashboards</h2>
           <p className="text-xs text-gray-500 mt-1">
-            Próximamente: gráficas propuestas según las columnas de estos archivos, que podrás modificar a tu gusto.
+            Abre el «Dashboard» de cualquiera de sus archivos: te proponemos gráficas según sus columnas y las modificas a tu gusto.
           </p>
         </div>
       </main>

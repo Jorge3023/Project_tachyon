@@ -78,6 +78,7 @@ http://localhost:5173
 - Plantillas guardadas: un archivo con las mismas columnas se interpreta solo.
 - **Proyectos**: carpetas personales para agrupar archivos (se crean con “+” en la barra lateral; borrar un proyecto no borra sus archivos).
 - Visor de datos por páginas con resumen por columna.
+- **Dashboards editables por archivo**: propuesta automática según el tipo de cada columna y editor propio (ver abajo).
 - Datos privados por usuario y compartir por correo (solo lectura).
 - API REST desarrollada con FastAPI.
 - Interfaz desarrollada con React y Tailwind CSS.
@@ -118,7 +119,7 @@ produccion-app/
 
 - [x] Detección automática de columnas en cualquier Excel/CSV.
 - [x] Plantillas, privacidad por usuario y compartir por correo.
-- [ ] Editor de dashboards (general y por proyecto) con gráficas propuestas según el tipo de columnas.
+- [x] Editor de dashboards con gráficas propuestas según el tipo de columnas.
 - [ ] Pantalla de exportación (imagen, PDF, PowerPoint, CSV/Excel).
 - [ ] Clasificadores y análisis asistido.
 
@@ -165,6 +166,7 @@ Proyecto de análisis de datos de propósito general (Excel/CSV).
 | `SUPABASE_SECRET_KEY` | Clave secreta de Supabase (`sb_secret_...`) para guardar archivos en Storage. Solo en el servidor, nunca en el frontend ni en Git. |
 | `SUPABASE_BUCKET` | Nombre del bucket privado de Storage. Por defecto `datasets`. |
 | `DB_POOL_MAX` | Conexiones máximas a la base de datos (por defecto 5). |
+| `PARQUET_CACHE_MAX_MB` | Memoria para guardar los datasets abiertos recientemente y no bajarlos del Storage en cada gráfica (por defecto 40). |
 
 **Frontend (build)**
 
@@ -190,6 +192,18 @@ En **Mis archivos → Subir cualquier Excel o CSV** puedes subir `.xlsx`, `.xls`
 
 Los datasets siguen las mismas reglas de privacidad: solo los ve su dueño y quienes él elija por correo. Endpoints: `GET|POST /proyectos`, `PATCH|DELETE /proyectos/{id}`, `PUT /archivos/{id}/proyecto`, `POST /datasets/analizar`, `GET /datasets/{id}/analisis`, `POST /datasets/{id}/confirmar`, `GET /datasets/{id}/datos`, `GET|DELETE /plantillas`.
 
+
+## Dashboards
+
+Desde **Mis archivos → Dashboard** (o desde un proyecto) se abre el dashboard de un archivo:
+
+- **Propuesta automática:** según los roles de las columnas se arman indicadores, evolución en el tiempo, circulares, barras, Pareto, dispersión, histograma, mapa de calor y una tabla. La métrica principal es el importe/monto antes que cantidades o promedios.
+- **Modo edición** (solo el dueño): agrega, duplica, elimina y reordena gráficas (arrastrando o con ↑ ↓); cambia el tipo, las columnas, la agregación (suma, promedio, conteo, mín., máx., mediana, únicos), el desglose, la granularidad de fechas, el ancho y el color; cada gráfica puede tener sus propios filtros.
+- **Filtros globales** por fecha, rango numérico o categorías, y granularidad (día, semana, mes, trimestre, año).
+- **Vistas:** puedes guardar varias por archivo (hasta 10) y cambiar entre ellas. Quien recibe el archivo compartido ve esas vistas en solo lectura y puede filtrar sin guardar.
+- Cada gráfica tiene su versión **«Tabla»** (accesibilidad) y los colores siguen una paleta validada para daltonismo.
+
+El navegador nunca recibe las filas ni manda fórmulas: manda una *configuración* que el servidor valida contra las columnas reales del archivo (agregaciones en lista blanca, límites de tamaño) y calcula con pandas, devolviendo solo resultados ya agregados. Endpoints: `GET /datasets/{id}/dashboard`, `POST /datasets/{id}/dashboard/datos`, `GET /datasets/{id}/valores`, `POST|PUT|DELETE /datasets/{id}/dashboard[/{vista}]`.
 
 ## Configurar Supabase (producción)
 

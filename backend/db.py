@@ -17,7 +17,7 @@ ES_POSTGRES = bool(DATABASE_URL)
 SQLITE_PATH = os.getenv("SQLITE_PATH", "produccion.db")
 
 # Tablas de la aplicación (se usa para activar la seguridad por filas en Postgres)
-TABLAS = ("usuarios", "archivos", "comparticiones", "plantillas")
+TABLAS = ("usuarios", "archivos", "comparticiones", "plantillas", "proyectos", "dashboards")
 
 
 class Fila(dict):
