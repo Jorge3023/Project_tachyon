@@ -4,6 +4,9 @@ import { useAuth } from '@/features/auth/AuthContext'
 import { useProyectos } from '@/features/proyectos/ProyectosContext'
 import { usePrincipal } from '@/features/dashboard/PrincipalContext'
 import api from '@/shared/api'
+import Avatar from '@/shared/components/Avatar'
+import ModalPerfil from '@/features/auth/components/ModalPerfil'
+import { etiquetaRol } from '@/shared/roles'
 
 const claseEnlace = ({ isActive }) =>
   'flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors duration-100 ' +
@@ -35,6 +38,7 @@ export default function Sidebar() {
   const [creando, setCreando] = useState(false)
   const [nuevo,   setNuevo]   = useState('')
   const [errorPr, setErrorPr] = useState('')
+  const [perfil,  setPerfil]  = useState(false)
 
   const crearProyecto = async (e) => {
     e.preventDefault(); setErrorPr('')
@@ -49,9 +53,6 @@ export default function Sidebar() {
     logout()
     navigate('/')
   }
-
-  const iniciales = usuario?.nombre
-    ?.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() || 'U'
 
   return (
     <aside className="w-56 min-w-[224px] bg-white border-r border-gray-100 flex flex-col h-screen">
@@ -115,15 +116,14 @@ export default function Sidebar() {
 
       {/* Usuario */}
       <div className="px-3 py-4 border-t border-gray-100">
-        <div className="flex items-center gap-3 px-2 mb-2">
-          <div className="w-8 h-8 rounded-full bg-brand-100 flex items-center justify-center text-brand-700 text-xs font-semibold flex-shrink-0">
-            {iniciales}
-          </div>
+        <button type="button" onClick={() => setPerfil(true)} title="Tu perfil y foto"
+          className="w-full flex items-center gap-3 px-2 py-1.5 rounded-lg hover:bg-gray-50 text-left">
+          <Avatar id={usuario?.id} version={usuario?.avatar_v} nombre={usuario?.nombre} tamano="md" />
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium text-gray-900 truncate">{usuario?.nombre}</p>
-            <p className="text-xs text-gray-400 capitalize">{usuario?.rol}</p>
+            <p className="text-xs text-gray-400">{etiquetaRol(usuario?.rol)}</p>
           </div>
-        </div>
+        </button>
         <button onClick={handleLogout} className="btn-ghost w-full justify-center text-red-500 hover:text-red-700 hover:bg-red-50 mt-1">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -132,6 +132,7 @@ export default function Sidebar() {
           Cerrar sesión
         </button>
       </div>
+      {perfil && <ModalPerfil onCerrar={() => setPerfil(false)} />}
     </aside>
   )
 }
