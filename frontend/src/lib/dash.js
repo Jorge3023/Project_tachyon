@@ -41,11 +41,29 @@ export const TIPOS = {
   dispersion: { l: 'Dispersión',   d: 'Relación entre dos columnas numéricas.', campos: { x: ['numero'], y: ['numero'], serie: ['categoria', 'estado'] } },
   histograma: { l: 'Histograma',   d: 'Cómo se distribuyen los valores de una columna.', campos: { x: ['numero'] } },
   calor:      { l: 'Mapa de calor', d: 'Cruza dos columnas y colorea la intensidad.', campos: { x: ['fecha', ...R_DIM], y: R_DIM, medida: ['numero'] }, aggs: true, grano: true },
+  mapa:       { l: 'Mapa geográfico', d: 'Puntos sobre un mapa real a partir de latitud y longitud.', campos: { lat: ['numero'], lon: ['numero'], medida: ['numero'], serie: ['categoria', 'estado'] }, aggs: true },
   tabla:      { l: 'Tabla',        d: 'Las filas del archivo, ordenadas como quieras.', campos: {} },
 }
-export const ORDEN_TIPOS = ['kpi', 'linea', 'area', 'barras', 'dona', 'pareto', 'dispersion', 'histograma', 'calor', 'tabla']
+export const ORDEN_TIPOS = ['kpi', 'linea', 'area', 'barras', 'dona', 'pareto', 'dispersion', 'histograma', 'calor', 'mapa', 'tabla']
 
 export const ROL_TEXTO = { fecha: 'Fecha', numero: 'Número', categoria: 'Categoría', estado: 'Estado', identificador: 'Identificador', texto: 'Texto' }
+
+const RX_LAT = /^(lat|latitud|latitude)$/i
+const RX_LON = /^(lon|lng|long|longitud|longitude)$/i
+const sinAcentos = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z]/g, '')
+const cabe = (c, tope) => c.rol === 'numero' && (c.min === undefined || c.min === null || (c.min >= -tope && c.max <= tope))
+/** Columnas que podrían ser latitud (±90) o longitud (±180) según su rango. */
+export const candidatasLat = (columnas) => columnas.filter(c => cabe(c, 90))
+export const candidatasLon = (columnas) => columnas.filter(c => cabe(c, 180))
+/** Mejor latitud/longitud por nombre; si no hay nombres claros, las dos primeras que encajen por rango. */
+export function columnasGeo(columnas) {
+  const lat = candidatasLat(columnas), lon = candidatasLon(columnas)
+  const la = lat.find(c => RX_LAT.test(sinAcentos(c.nombre))) || null
+  const lo = lon.find(c => RX_LON.test(sinAcentos(c.nombre))) || null
+  const a = la || lat[0] || null
+  const b = lo || lon.find(c => c.nombre !== a?.nombre) || null
+  return { lat: a?.nombre ?? null, lon: b?.nombre ?? null, porNombre: !!(la && lo) }
+}
 
 export function aggsPermitidas(tipo) {
   const a = TIPOS[tipo]?.aggs
@@ -59,6 +77,7 @@ export function motivoNoDisponible(tipo, columnas) {
   const cuantas = (roles) => columnas.filter(c => roles.includes(c.rol)).length
   const c = TIPOS[tipo].campos
   if (tipo === 'dispersion' && cuantas(['numero']) < 2) return 'Necesita dos columnas numéricas'
+  if (tipo === 'mapa') { const g = columnasGeo(columnas); if (!g.lat || !g.lon || g.lat === g.lon) return 'Necesita columnas numéricas de latitud (±90) y longitud (±180)' }
   if (tipo === 'calor' && (cuantas([...R_DIM, 'fecha']) < 2 || !hay(R_DIM))) return 'Necesita dos columnas de categoría (o fecha y categoría)'
   for (const [campo, roles] of Object.entries(c)) {
     if (['x', 'y'].includes(campo) && !hay(roles) && tipo !== 'kpi') return `No hay columnas de tipo ${roles.map(r => ROL_TEXTO[r].toLowerCase()).join(' o ')}`
@@ -99,6 +118,10 @@ export function widgetNuevo(tipo, columnas) {
     w.y = por(R_DIM, [w.x])[0]?.nombre
     w.medida = nums[0]?.nombre ?? null; w.agg = w.medida ? 'suma' : 'conteo'; w.top = 10
   }
+  if (tipo === 'mapa') {
+    const g = columnasGeo(columnas)
+    w.lat = g.lat; w.lon = g.lon; w.medida = null; w.agg = 'conteo'; w.serie = null; w.ancho = 12
+  }
   if (tipo === 'tabla') { w.columnas = columnas.slice(0, 6).map(c => c.nombre); w.filas = 10; w.orden = null; w.dir = 'desc'; w.ancho = 12 }
   w.titulo = tituloAutomatico(w)
   return w
@@ -115,13 +138,14 @@ export function tituloAutomatico(w) {
     case 'pareto': return `Pareto de ${m || 'registros'} por ${w.x || '…'}`
     case 'dispersion': return `${w.x || '…'} vs ${w.y || '…'}`
     case 'histograma': return `Distribución de ${w.x || '…'}`
+    case 'mapa': return w.medida ? `Mapa de ${w.medida}` : 'Mapa'
     case 'calor': return `${w.x || '…'} × ${w.y || '…'}`
     default: return 'Datos'
   }
 }
 
 export function subtituloWidget(w) {
-  if (['linea', 'area', 'barras', 'calor', 'dona', 'pareto'].includes(w.tipo)) {
+  if (['linea', 'area', 'barras', 'calor', 'dona', 'pareto', 'mapa'].includes(w.tipo)) {
     return w.medida ? `${AGG_TEXTO[w.agg] || ''} de ${w.medida}` : 'Conteo de filas'
   }
   if (w.tipo === 'kpi') return w.medida ? AGG_TEXTO[w.agg] : 'Conteo de filas'
@@ -183,7 +207,7 @@ export function cambiarTipo(w, tipo, columnas) {
   const roles = Object.fromEntries(columnas.map(c => [c.nombre, c.rol]))
   const campos = TIPOS[tipo].campos
   const out = { ...base, id: w.id, filtros: w.filtros || [], ancho: w.ancho && tipo !== 'kpi' && w.tipo !== 'kpi' ? w.ancho : base.ancho, color: w.color ?? null }
-  for (const campo of ['x', 'y', 'medida', 'serie']) {
+  for (const campo of ['x', 'y', 'lat', 'lon', 'medida', 'serie']) {
     if (campos[campo] && w[campo] && campos[campo].includes(roles[w[campo]])) out[campo] = w[campo]
   }
   if (out.x && out.x === out.y && tipo === 'calor') out.y = base.y

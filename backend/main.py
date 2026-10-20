@@ -75,6 +75,9 @@ def init_db():
     # Migraciones (bases creadas con versiones anteriores)
     if "username" not in db.columnas(conn, "usuarios"):
         cur.execute("ALTER TABLE usuarios ADD COLUMN username TEXT")
+    # Dashboard que cada usuario ve al entrar: {"archivo_id": n, "vista_id": n|null}
+    if "dashboard_principal" not in db.columnas(conn, "usuarios"):
+        cur.execute("ALTER TABLE usuarios ADD COLUMN dashboard_principal TEXT")
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_username "
                 "ON usuarios(lower(username)) WHERE username IS NOT NULL")
     # Archivos genéricos (cualquier Excel/CSV): tipo, esquema de columnas confirmado y huella de columnas
@@ -829,6 +832,22 @@ def _lista_vistas(conn, a):
     return [{"id": r["id"], "nombre": r["nombre"]} for r in
             conn.execute("SELECT id, nombre FROM dashboards WHERE archivo_id=? ORDER BY id", (a["id"],)).fetchall()]
 
+def _columnas_editor(a, esquema):
+    """Columnas para el editor; las numéricas llevan su rango (para ofrecer latitud/longitud solo si encajan)."""
+    try:
+        res = {r["nombre"]: r for r in json.loads(a["resumen_json"] or "[]")}
+    except ValueError:
+        res = {}
+    out = []
+    for c in esquema:
+        if c["rol"] == "ignorar":
+            continue
+        d = {"nombre": c["nombre"], "rol": c["rol"]}
+        if c["rol"] == "numero" and res.get(c["nombre"], {}).get("min") is not None:
+            d["min"], d["max"] = res[c["nombre"]]["min"], res[c["nombre"]]["max"]
+        out.append(d)
+    return out
+
 @app.get("/datasets/{archivo_id}/dashboard")
 def ver_dashboard(archivo_id: int, vista: Optional[int] = None, u=Depends(get_usuario_actual)):
     """Vista guardada (la pedida o la primera) o, si el archivo aún no tiene ninguna, la propuesta automática."""
@@ -856,7 +875,7 @@ def ver_dashboard(archivo_id: int, vista: Optional[int] = None, u=Depends(get_us
                 "vista": {"id": actual["id"] if guardada else None,
                           "nombre": actual["nombre"] if guardada else "Resumen sugerido", "guardada": guardada},
                 "config": config,
-                "columnas": [{"nombre": c["nombre"], "rol": c["rol"]} for c in esquema if c["rol"] != "ignorar"]}
+                "columnas": _columnas_editor(a, esquema)}
     finally:
         conn.close()
 
@@ -952,6 +971,64 @@ def borrar_vista(archivo_id: int, vista_id: int, u=Depends(get_usuario_actual)):
     finally:
         conn.close()
     return {"mensaje": "Vista eliminada"}
+
+# ── Dashboard principal: el que cada usuario ve al entrar (puede ser de un archivo suyo o compartido) ────
+class PrincipalIn(BaseModel):
+    archivo_id: int
+    vista_id: Optional[int] = None
+
+def _principal_valido(conn, u):
+    """Devuelve el dashboard principal vigente del usuario o None (si ya no existe o ya no tiene acceso)."""
+    crudo = (conn.execute("SELECT dashboard_principal FROM usuarios WHERE id=?", (u["id"],)).fetchone() or {})
+    crudo = crudo["dashboard_principal"] if crudo else None
+    if not crudo:
+        return None
+    try:
+        p = json.loads(crudo)
+        a = _archivo_con_acceso(conn, int(p["archivo_id"]), u)
+    except (ValueError, KeyError, TypeError, HTTPException):
+        conn.execute("UPDATE usuarios SET dashboard_principal=NULL WHERE id=?", (u["id"],)); conn.commit()
+        return None
+    if a["estado"] != "procesado":
+        return None
+    vista = None
+    if p.get("vista_id") is not None:
+        vista = conn.execute("SELECT id, nombre FROM dashboards WHERE id=? AND archivo_id=?", (p["vista_id"], a["id"])).fetchone()
+    return {"archivo_id": a["id"], "archivo_nombre": a["nombre"], "vista_id": vista["id"] if vista else None,
+            "vista_nombre": vista["nombre"] if vista else None}
+
+@app.get("/me/dashboard-principal")
+def ver_principal(u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        return {"principal": _principal_valido(conn, u)}
+    finally:
+        conn.close()
+
+@app.put("/me/dashboard-principal")
+def fijar_principal(datos: PrincipalIn, u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        a = _archivo_con_acceso(conn, datos.archivo_id, u)
+        if a["estado"] != "procesado":
+            raise HTTPException(status_code=409, detail="El archivo aún no está procesado")
+        if datos.vista_id is not None:
+            _vista_de(conn, a, datos.vista_id)
+        conn.execute("UPDATE usuarios SET dashboard_principal=? WHERE id=?",
+                     (json.dumps({"archivo_id": a["id"], "vista_id": datos.vista_id}), u["id"]))
+        conn.commit()
+        return {"principal": _principal_valido(conn, u)}
+    finally:
+        conn.close()
+
+@app.delete("/me/dashboard-principal")
+def quitar_principal(u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        conn.execute("UPDATE usuarios SET dashboard_principal=NULL WHERE id=?", (u["id"],)); conn.commit()
+    finally:
+        conn.close()
+    return {"principal": None}
 
 @app.get("/plantillas")
 def listar_plantillas(u=Depends(get_usuario_actual)):
