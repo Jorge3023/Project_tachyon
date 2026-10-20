@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import api from '../services/api'
-import { useAuth } from '../context/AuthContext'
+import api from '@/shared/api'
+import { useAuth } from '@/features/auth/AuthContext'
 
 // Pantalla de primer ingreso: el usuario elige su nombre de usuario (una sola vez).
 export default function ElegirUsername() {

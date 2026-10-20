@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import api from '../services/api'
+import api from '@/shared/api'
 
 const NOMBRE_MOTOR = { postgres: 'PostgreSQL (Supabase)', sqlite: 'SQLite (archivo local)' }
 const NOMBRE_ARCHIVOS = { supabase: 'Supabase Storage', local: 'Disco local' }

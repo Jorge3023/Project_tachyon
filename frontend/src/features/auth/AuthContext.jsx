@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect } from 'react'
-import api from '../services/api'
+import api from '@/shared/api'
 
 const AuthContext = createContext(null)
 const AUTO_LOGOUT_MS = 10 * 60 * 1000

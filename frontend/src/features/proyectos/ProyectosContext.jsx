@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
-import api from '../services/api'
-import { useAuth } from './AuthContext'
+import api from '@/shared/api'
+import { useAuth } from '@/features/auth/AuthContext'
 
 const ProyectosContext = createContext({ proyectos: [], recargar: () => {} })
 

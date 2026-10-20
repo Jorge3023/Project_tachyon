@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import api from '../services/api'
+import api from '@/shared/api'
 import ModalRevisarColumnas from './ModalRevisarColumnas'
 
 /* Tarjeta para subir cualquier Excel/CSV: sube, analiza las columnas y abre la pantalla de revisión.

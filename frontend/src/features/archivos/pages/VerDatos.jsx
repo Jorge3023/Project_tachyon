@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import api from '../services/api'
+import api from '@/shared/api'
 
 const ETIQUETA_ROL = { fecha: 'Fecha', numero: 'Número', categoria: 'Categoría', identificador: 'Identificador', estado: 'Estado', texto: 'Texto' }
 const fmt = (n) => (n === undefined || n === null) ? '' : Number(n).toLocaleString('es-MX', { maximumFractionDigits: 2 })

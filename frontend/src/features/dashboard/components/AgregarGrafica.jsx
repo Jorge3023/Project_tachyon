@@ -1,4 +1,4 @@
-import { TIPOS, ORDEN_TIPOS, motivoNoDisponible } from '../../lib/dash'
+import { TIPOS, ORDEN_TIPOS, motivoNoDisponible } from '@/features/dashboard/lib/dash'
 
 /** Ventana para elegir el tipo de la nueva gráfica. Los tipos que no encajan con las columnas salen deshabilitados con el motivo. */
 export default function AgregarGrafica({ columnas, onElegir, onCerrar }) {

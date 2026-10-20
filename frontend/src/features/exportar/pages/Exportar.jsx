@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useSearchParams, useLocation, useNavigate, Link } from 'react-router-dom'
-import api from '../services/api'
-import ListaFiltros from '../components/dash/Filtros'
-import TarjetaFija from '../components/dash/TarjetaFija'
-import { GRANOS, TIPOS, TINTA, fmtNum } from '../lib/dash'
-import * as X from '../lib/exportar'
+import api from '@/shared/api'
+import ListaFiltros from '@/features/dashboard/components/Filtros'
+import TarjetaFija from '@/features/dashboard/components/TarjetaFija'
+import { GRANOS, TIPOS, TINTA, fmtNum } from '@/features/dashboard/lib/dash'
+import * as X from '@/features/exportar/lib/exportar'
 
 const FONDO = '#f8f8f6'
 const MAX_XLSX = 50000, MAX_CSV = 500000      // los mismos topes del servidor
