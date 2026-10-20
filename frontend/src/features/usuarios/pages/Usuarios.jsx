@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import api from '@/shared/api'
+import PageHeader from '@/shared/components/PageHeader'
 import { useAuth } from '@/features/auth/AuthContext'
 import EstadoSistema from '@/features/usuarios/components/EstadoSistema'
 
@@ -40,14 +41,10 @@ export default function Usuarios() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <header className="bg-white border-b border-gray-100 px-6 py-4">
-        <h1 className="text-base font-semibold text-gray-900">Usuarios</h1>
-        <p className="text-xs text-gray-400 mt-0.5">
-          Crea cuentas y controla quién puede entrar. Los datos de cada usuario son privados, ni tú los ves.
-        </p>
-      </header>
+      <PageHeader titulo="Usuarios"
+        subtitulo="Crea cuentas y controla quién puede entrar. Los datos de cada usuario son privados, ni tú los ves." />
 
-      <main className="flex-1 overflow-y-auto p-6 space-y-5">
+      <main className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5">
         <EstadoSistema />
         <div className="card">
           <h2 className="text-sm font-semibold text-gray-900 mb-4">Nueva cuenta</h2>

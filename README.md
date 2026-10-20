@@ -37,7 +37,7 @@ project_tachyon/
 ├── frontend/
 │   └── src/
 │       ├── App.jsx        Rutas
-│       ├── shared/        Cliente de la API y piezas comunes (layout, menú lateral)
+│       ├── shared/        Cliente de la API y piezas comunes (layout, menú lateral, PageHeader, FilaArchivo, Vacio, Cargando)
 │       └── features/      Una carpeta por funcionalidad, cada una con sus pages/ y components/
 │           ├── auth/        Sesión, login y nombre de usuario
 │           ├── archivos/    Mis archivos, subida, revisión de columnas, compartir y visor de datos
@@ -49,7 +49,7 @@ project_tachyon/
 └── images/                Capturas del README
 ```
 
-Dentro del frontend, los imports entre carpetas usan el alias `@` (`@/features/dashboard/lib/dash` = `frontend/src/features/dashboard/lib/dash`). Una funcionalidad puede usar `shared/` y otras funcionalidades, pero `shared/` no depende de ellas salvo el menú lateral.
+Dentro del frontend, los imports entre carpetas usan el alias `@` (`@/features/dashboard/lib/dash` = `frontend/src/features/dashboard/lib/dash`). Todas las páginas usan el mismo `PageHeader` (migas, título, acciones) y la jerarquía de botones de `index.css`: `btn-primary` (acción principal), `btn-secondary` (habitual), `btn-ghost` (terciaria) y `btn-danger` (destructiva). Una funcionalidad puede usar `shared/` y otras funcionalidades, pero `shared/` no depende de ellas salvo el menú lateral.
 
 ## Inicio rápido
 

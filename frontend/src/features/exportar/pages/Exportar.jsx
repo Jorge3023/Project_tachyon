@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useSearchParams, useLocation, useNavigate, Link } from 'react-router-dom'
 import api from '@/shared/api'
+import PageHeader from '@/shared/components/PageHeader'
+import Cargando from '@/shared/components/Cargando'
 import ListaFiltros from '@/features/dashboard/components/Filtros'
 import TarjetaFija from '@/features/dashboard/components/TarjetaFija'
 import { GRANOS, TIPOS, TINTA, fmtNum } from '@/features/dashboard/lib/dash'
@@ -219,7 +221,7 @@ export default function Exportar() {
     </div>
   )
   if (!info || !config) return (
-    <div className="flex-1 flex items-center justify-center"><div className="w-6 h-6 border-2 border-brand-600 border-t-transparent rounded-full animate-spin" /></div>
+    <Cargando />
   )
 
   const etiquetaFormato = FORMATOS.find(f => f.v === formato)
@@ -229,26 +231,21 @@ export default function Exportar() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-      <header className="bg-white border-b border-gray-100 px-4 md:px-6 py-3">
-        <p className="text-xs text-gray-400 truncate">
-          <Link to="/archivos" className="hover:text-gray-600">Archivos</Link>{' / '}
-          <button type="button" onClick={volver} className="hover:text-gray-600">Dashboard de {info.archivo.nombre}</button>
-        </p>
-        <div className="flex items-center justify-between gap-3 flex-wrap mt-1">
-          <h1 className="text-base font-semibold text-gray-900">Exportar</h1>
-          <div className="flex items-center gap-2 flex-wrap">
-            <button type="button" className="btn-ghost text-xs" onClick={volver} disabled={ocupado}>← Volver al dashboard</button>
-            <button type="button" className="btn-primary text-sm py-2" onClick={exportar} disabled={!puedeExportar}>
-              {ocupado ? 'Exportando…' : `Descargar ${etiquetaFormato.l}${formato === 'png' && opc.pngModo === 'varias' ? ' (ZIP)' : ''}`}
-            </button>
-          </div>
-        </div>
+      <PageHeader
+        migas={[{ texto: 'Archivos', to: '/archivos' }, { texto: `Dashboard de ${info.archivo.nombre}`, accion: volver }]}
+        titulo="Exportar"
+        acciones={<>
+          <button type="button" className="btn-ghost text-xs" onClick={volver} disabled={ocupado}>← Volver al dashboard</button>
+          <button type="button" className="btn-primary" onClick={exportar} disabled={!puedeExportar}>
+            {ocupado ? 'Exportando…' : `Descargar ${etiquetaFormato.l}${formato === 'png' && opc.pngModo === 'varias' ? ' (ZIP)' : ''}`}
+          </button>
+        </>}>
         <div aria-live="polite" className="empty:hidden">
           {ocupado && progreso && <p className="mt-2 text-xs text-brand-700 bg-brand-50 rounded-lg px-3 py-1.5 flex items-center gap-2"><span className="w-3 h-3 border-2 border-brand-600 border-t-transparent rounded-full animate-spin" />{progreso}</p>}
           {listo && !ocupado && <p role="status" className="mt-2 text-xs text-green-700 bg-green-50 rounded-lg px-3 py-1.5">{listo}</p>}
         </div>
         {fallo && <p role="alert" className="mt-2 text-xs text-red-700 bg-red-50 rounded-lg px-3 py-1.5">{fallo}</p>}
-      </header>
+      </PageHeader>
 
       <div className="flex-1 overflow-y-auto">
         <div className="p-4 md:p-6 grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)] items-start">

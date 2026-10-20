@@ -3,6 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/features/auth/AuthContext'
 import api from '@/shared/api'
 import { useProyectos } from '@/features/proyectos/ProyectosContext'
+import PageHeader from '@/shared/components/PageHeader'
+import FilaArchivo from '@/shared/components/FilaArchivo'
+import Vacio from '@/shared/components/Vacio'
+import Cargando from '@/shared/components/Cargando'
 
 function MetricCard({ label, value, sub, color = 'gray', icon }) {
   const colors = {
@@ -70,14 +74,9 @@ export default function Resumen() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <header className="bg-white border-b border-gray-100 px-6 py-4">
-        <h1 className="text-base font-semibold text-gray-900">
-          {primerNombre ? `Hola, ${primerNombre}` : 'Dashboard'}
-        </h1>
-        <p className="text-xs text-gray-400 mt-0.5">{hoy}</p>
-      </header>
+      <PageHeader titulo={primerNombre ? `Hola, ${primerNombre}` : 'Inicio'} subtitulo={hoy} />
 
-      <main className="flex-1 overflow-y-auto p-6 space-y-5">
+      <main className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <MetricCard label="Mis archivos"          value={cargando ? '…' : propios.length}
             sub="Procesados y listos para ver" color="blue" icon={iconoArchivo} />
@@ -88,7 +87,7 @@ export default function Resumen() {
         </div>
 
         <div className="card">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between gap-2 mb-2">
             <h2 className="text-sm font-semibold text-gray-900">Tus datos recientes</h2>
             <button onClick={() => navigate('/archivos')} className="btn-primary text-xs py-1.5">
               Subir un archivo
@@ -98,41 +97,19 @@ export default function Resumen() {
           {error ? (
             <p className="text-sm text-red-600 py-8 text-center">No se pudieron cargar tus archivos. Intenta de nuevo en un momento.</p>
           ) : cargando ? (
-            <div className="flex justify-center py-10">
-              <div className="w-5 h-5 border-2 border-brand-600 border-t-transparent rounded-full animate-spin" />
-            </div>
+            <Cargando />
           ) : recientes.length === 0 ? (
-            <div className="text-center py-10 text-gray-400">
-              <svg className="w-10 h-10 mx-auto mb-3 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                  d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-              <p className="text-sm text-gray-500">Aún no tienes datos</p>
-              <p className="text-xs mt-1">Sube cualquier Excel o CSV: detectamos las columnas y tú confirmas.</p>
-            </div>
+            <Vacio titulo="Aún no tienes datos">Sube cualquier Excel o CSV: detectamos las columnas y tú confirmas.</Vacio>
           ) : (
             <div className="divide-y divide-gray-50">
               {recientes.map(a => (
-                <div key={a.id} className="flex items-center gap-4 py-3">
-                  <div className="w-8 h-8 bg-green-50 rounded-lg flex items-center justify-center flex-shrink-0 text-green-600">
-                    {iconoArchivo}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-900 truncate">{a.nombre}</p>
-                    <p className="text-xs text-gray-400">
-                      {`${a.filas?.toLocaleString('es-MX') ?? 0} filas`}
-                      {a.es_mio ? '' : ` · compartido por ${a.subido_por_nombre || 'otro usuario'}`}
-                      {` · ${new Date(a.subido_en).toLocaleDateString('es-MX')}`}
-                    </p>
-                  </div>
-                  <button onClick={() => navigate(`/datos/${a.id}/dashboard`)}
-                    className="btn-ghost text-brand-600 hover:text-brand-700 hover:bg-brand-50 text-xs flex-shrink-0">
-                    Dashboard
-                  </button>
-                  <button onClick={() => navigate(`/datos/${a.id}`)} className="btn-ghost text-gray-500 text-xs flex-shrink-0">
-                    Ver datos
-                  </button>
-                </div>
+                <FilaArchivo key={a.id} nombre={a.nombre}
+                  detalle={`${a.filas?.toLocaleString('es-MX') ?? 0} filas`
+                    + (a.es_mio ? '' : ` · compartido por ${a.subido_por_nombre || 'otro usuario'}`)
+                    + ` · ${new Date(a.subido_en).toLocaleDateString('es-MX')}`}>
+                  <button onClick={() => navigate(`/datos/${a.id}`)} className="btn-ghost text-xs">Ver datos</button>
+                  <button onClick={() => navigate(`/datos/${a.id}/dashboard`)} className="btn-secondary text-xs">Dashboard</button>
+                </FilaArchivo>
               ))}
             </div>
           )}
@@ -153,12 +130,9 @@ export default function Resumen() {
           </div>
         )}
 
-        <div className="card bg-gray-50 border-dashed">
-          <h2 className="text-sm font-semibold text-gray-700">Dashboards a tu medida</h2>
-          <p className="text-xs text-gray-500 mt-1">
-            Abre el «Dashboard» de cualquier archivo: te proponemos gráficas según sus columnas (incluido un mapa si hay latitud y longitud) y las ajustas en «Modo edición». Marca ☆ «Hacer principal» el que quieras ver al entrar, y con «Exportar» descárgalo como imagen, PDF, PowerPoint, Excel o CSV.
-          </p>
-        </div>
+        <p className="text-xs text-gray-400 px-1">
+          Consejo: en el «Dashboard» de cualquier archivo usa «Modo edición» para ajustar las gráficas, ☆ para dejarlo como tu inicio y «Exportar» para descargarlo.
+        </p>
       </main>
     </div>
   )

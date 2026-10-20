@@ -5,18 +5,27 @@ import { useProyectos } from '@/features/proyectos/ProyectosContext'
 import { usePrincipal } from '@/features/dashboard/PrincipalContext'
 import api from '@/shared/api'
 
-const navItems = [
-  {
-    label: 'Dashboard',
-    to: '/dashboard',
-    icon: (
-      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-          d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-      </svg>
-    ),
-  },
-]
+const claseEnlace = ({ isActive }) =>
+  'flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors duration-100 ' +
+  (isActive ? 'bg-brand-50 text-brand-700 font-medium' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50')
+
+const Icono = ({ d }) => (
+  <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={d} />
+  </svg>
+)
+
+const ICONOS = {
+  inicio:   'M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z',
+  resumen:  'M4 6h16M4 12h10M4 18h16',
+  archivos: 'M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
+  usuarios: 'M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z',
+  carpeta:  'M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z',
+}
+
+function Enlace({ to, icono, end, children }) {
+  return <NavLink to={to} end={end} className={claseEnlace}><Icono d={ICONOS[icono]} />{children}</NavLink>
+}
 
 export default function Sidebar() {
   const { usuario, logout } = useAuth()
@@ -57,8 +66,8 @@ export default function Sidebar() {
             </svg>
           </div>
           <div>
-            <p className="text-sm font-semibold text-gray-900">Panel de control</p>
-            <p className="text-xs text-gray-400">Bienvenido, {usuario?.nombre}</p>
+            <p className="text-sm font-semibold text-gray-900 leading-tight">Tachyon</p>
+            <p className="text-xs text-gray-400">Análisis de datos</p>
           </div>
         </div>
       </div>
@@ -66,62 +75,10 @@ export default function Sidebar() {
       {/* Nav */}
       <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
         <p className="text-xs text-gray-400 px-2 pb-2 uppercase tracking-wider">Principal</p>
-        {navItems.map(item => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end
-            className={({ isActive }) =>
-              `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors duration-100 ` +
-              (isActive
-                ? 'bg-brand-50 text-brand-700 font-medium'
-                : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50')
-            }
-          >
-            {item.icon}
-            {item.label}
-          </NavLink>
-        ))}
-
-        {principal && (
-          <NavLink to="/resumen"
-            className={({ isActive }) =>
-              `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors duration-100 ` +
-              (isActive ? 'bg-brand-50 text-brand-700 font-medium' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50')}>
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h10M4 18h16" />
-            </svg>
-            Resumen
-          </NavLink>
-        )}
-        <NavLink
-          to="/archivos"
-          className={({ isActive }) =>
-            `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors duration-100 ` +
-            (isActive ? 'bg-brand-50 text-brand-700 font-medium' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50')
-          }
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-              d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-          </svg>
-          Mis archivos
-        </NavLink>
-        {usuario?.rol === 'admin' && (
-          <NavLink
-            to="/usuarios"
-            className={({ isActive }) =>
-              `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors duration-100 ` +
-              (isActive ? 'bg-brand-50 text-brand-700 font-medium' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50')
-            }
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            Usuarios
-          </NavLink>
-        )}
+        <Enlace to="/dashboard" icono="inicio" end>Inicio</Enlace>
+        {principal && <Enlace to="/resumen" icono="resumen">Resumen</Enlace>}
+        <Enlace to="/archivos" icono="archivos">Mis archivos</Enlace>
+        {usuario?.rol === 'admin' && <Enlace to="/usuarios" icono="usuarios">Usuarios</Enlace>}
 
         {/* Proyectos: carpetas propias para agrupar archivos */}
         <div className="flex items-center justify-between px-2 pt-5 pb-2">
@@ -148,14 +105,8 @@ export default function Sidebar() {
           <p className="text-xs text-gray-400 px-3 leading-relaxed">Crea un proyecto con “+” para agrupar tus archivos.</p>
         )}
         {proyectos.map(p => (
-          <NavLink key={p.id} to={`/proyecto/${p.id}`}
-            className={({ isActive }) =>
-              `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors duration-100 ` +
-              (isActive ? 'bg-brand-50 text-brand-700 font-medium' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50')}>
-            <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
-            </svg>
+          <NavLink key={p.id} to={`/proyecto/${p.id}`} className={claseEnlace}>
+            <Icono d={ICONOS.carpeta} />
             <span className="truncate flex-1">{p.nombre}</span>
             <span className="text-xs text-gray-400">{p.num_archivos}</span>
           </NavLink>

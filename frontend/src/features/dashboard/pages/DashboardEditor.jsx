@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useParams, Link, useNavigate, useLocation } from 'react-router-dom'
 import api from '@/shared/api'
+import PageHeader from '@/shared/components/PageHeader'
+import Cargando from '@/shared/components/Cargando'
 import { usePrincipal } from '@/features/dashboard/PrincipalContext'
 import { Grafica, TablaAlternativa, vacio } from '@/features/dashboard/components/Graficas'
 import PanelConfig from '@/features/dashboard/components/PanelConfig'
@@ -241,7 +243,7 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
     </div>
   )
   if (!info || !config) return (
-    <div className="flex-1 flex items-center justify-center"><div className="w-6 h-6 border-2 border-brand-600 border-t-transparent rounded-full animate-spin" /></div>
+    <Cargando />
   )
 
   return (
@@ -249,13 +251,12 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
       {agregando && <AgregarGrafica columnas={columnas} onElegir={agregar} onCerrar={() => setAgregando(false)} />}
 
       <div className="flex-1 flex flex-col min-w-0 overflow-y-auto md:overflow-hidden">
-        <header className="bg-white border-b border-gray-100 px-4 md:px-6 py-3">
-          <p className="text-xs text-gray-400">
-            <Link to="/archivos" onClick={e => { if (!confirmarSalida()) e.preventDefault() }} className="hover:text-gray-600">Archivos</Link>
-            {' / '}<span title={info.archivo.nombre}>{info.archivo.nombre}</span>
-            {' · '}{fmtNum(info.archivo.filas)} filas
-          </p>
-          <div className="flex items-center justify-between gap-3 flex-wrap mt-1">
+        <PageHeader
+          migas={[
+            { texto: 'Archivos', to: '/archivos', onClick: e => { if (!confirmarSalida()) e.preventDefault() } },
+            { texto: `${info.archivo.nombre} · ${fmtNum(info.archivo.filas)} filas` },
+          ]}
+          titulo={
             <div className="flex items-center gap-2 flex-wrap min-w-0">
               {nombrando ? (
                 <form onSubmit={enviarNombre} className="flex items-center gap-2">
@@ -266,7 +267,7 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
                 </form>
               ) : (
                 <>
-                  <h1 className="text-base font-semibold text-gray-900">Dashboard</h1>
+                  <h1 className="text-base font-semibold text-gray-900">{esInicio ? 'Inicio' : 'Dashboard'}</h1>
                   <label className="flex items-center gap-1.5 text-xs text-gray-500">
                     Vista:
                     <select value={info.vista.id ?? ''} onChange={e => cambiarVista(e.target.value)} aria-label="Vista"
@@ -279,13 +280,14 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
                     <>
                       <button type="button" className="btn-ghost text-xs" onClick={() => { setNombrando('nueva'); setNombre('') }}>+ Nueva vista</button>
                       {info.vista.guardada && <button type="button" className="btn-ghost text-xs" onClick={() => { setNombrando('renombrar'); setNombre(info.vista.nombre) }}>Renombrar</button>}
-                      {info.vista.guardada && <button type="button" className="btn-ghost text-xs text-red-500 hover:bg-red-50" onClick={borrarVista}>Eliminar vista</button>}
+                      {info.vista.guardada && <button type="button" className="btn-danger text-xs" onClick={borrarVista}>Eliminar vista</button>}
                     </>
                   )}
                 </>
               )}
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
+          }
+          acciones={<>
               {aviso && <span role="status" className="text-xs text-green-700 bg-green-50 rounded-lg px-2.5 py-1">{aviso}</span>}
               {sucio && esMio && (
                 <>
@@ -297,29 +299,27 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
               {sucio && !esMio && <button className="btn-ghost text-xs" onClick={descartar}>Restablecer filtros</button>}
               <button type="button" onClick={alternarPrincipal} aria-pressed={esPrincipal}
                 title={esPrincipal ? 'Es tu dashboard principal; clic para quitarlo' : 'Mostrar este dashboard al entrar'}
-                className={`text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors flex items-center gap-1.5 whitespace-nowrap ` +
-                  (esPrincipal ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-gray-200 text-gray-600 hover:bg-gray-50')}>
+                className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors flex items-center gap-1.5 whitespace-nowrap ` +
+                  (esPrincipal ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300')}>
                 <span aria-hidden="true">{esPrincipal ? '★' : '☆'}</span>{esPrincipal ? 'Principal' : 'Hacer principal'}
               </button>
               {esMio && editando && (
-                <button className="btn-ghost text-xs border border-gray-200 whitespace-nowrap" onClick={() => setAgregando(true)}>+ Agregar gráfica</button>
+                <button className="btn-secondary text-xs" onClick={() => setAgregando(true)}>+ Agregar gráfica</button>
               )}
               {esMio && (
                 <button type="button" onClick={() => { setEditando(e => !e); setSel(null) }} aria-pressed={editando}
                   className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ` +
-                    (editando ? 'bg-brand-600 border-brand-600 text-white' : 'border-gray-200 text-gray-700 hover:bg-gray-50')}>
+                    (editando ? 'bg-brand-600 border-brand-600 text-white' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300')}>
                   {editando ? 'Terminar edición' : 'Modo edición'}
                 </button>
               )}
-              <button type="button" className="btn-ghost text-xs border border-gray-200 whitespace-nowrap" title="Descargar como imagen, PDF, PowerPoint, Excel o CSV"
+              <button type="button" className="btn-secondary text-xs" title="Descargar como imagen, PDF, PowerPoint, Excel o CSV"
                 onClick={() => navigate(`/datos/${id}/exportar${vistaActual ? `?vista=${vistaActual}` : ''}`, { state: { config, vista: vistaActual } })}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" /></svg>
                 Exportar
               </button>
               <Link to={`/datos/${id}`} className="btn-ghost text-xs">Ver datos</Link>
-            </div>
-          </div>
-        </header>
+          </>} />
 
         {/* Filtros globales */}
         <div className="bg-white border-b border-gray-100 px-4 md:px-6 py-2.5 flex items-start gap-4 flex-wrap">
