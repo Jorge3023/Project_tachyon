@@ -1,8 +1,6 @@
 # Project_Tachyon
 
-Aplicación web para monitoreo y gestión de líneas de producción.
-
-Incluye autenticación de usuarios, dashboard con métricas visuales y módulo de carga de archivos Excel preparado para futuras funcionalidades de análisis y procesamiento de datos.
+Plataforma web para analizar **cualquier Excel o CSV**: sube un archivo, el sistema detecta el tipo de cada columna, tú lo revisas y queda guardado de forma privada, listo para consultarlo, compartirlo en solo lectura y (próximamente) armar dashboards a tu medida y exportarlos.
 
 ---
 
@@ -75,10 +73,13 @@ http://localhost:5173
 
 ## ✨ Funcionalidades actuales
 
-- Inicio de sesión de usuarios.
-- Dashboard con indicadores visuales.
-- Métricas por día, semana y mes.
-- Carga de archivos Excel.
+- Inicio de sesión con cuentas creadas por el administrador.
+- Subida de cualquier Excel o CSV con detección automática de columnas y revisión manual.
+- Plantillas guardadas: un archivo con las mismas columnas se interpreta solo.
+- **Proyectos**: carpetas personales para agrupar archivos (se crean con “+” en la barra lateral; borrar un proyecto no borra sus archivos).
+- Visor de datos por páginas con resumen por columna.
+- **Dashboards editables por archivo**: propuesta automática según el tipo de cada columna y editor propio (ver abajo).
+- Datos privados por usuario y compartir por correo (solo lectura).
 - API REST desarrollada con FastAPI.
 - Interfaz desarrollada con React y Tailwind CSS.
 
@@ -87,13 +88,14 @@ http://localhost:5173
 ## 📁 Estructura del proyecto
 
 ```text
-produccion-app/
+project_tachyon/
 │
 ├── backend/
 │   ├── main.py
-│   ├── excel_parser.py
+│   ├── db.py
+│   ├── storage.py
 │   ├── requirements.txt
-│   └── produccion.db (se genera automáticamente)
+│   └── tachyon.db (solo en desarrollo; se genera automáticamente)
 │
 ├── frontend/
 │   ├── src/
@@ -115,26 +117,24 @@ produccion-app/
 
 ## Próximas funcionalidades
 
-- [x] Procesamiento automático de archivos Excel.
-- [ ] Generación de reportes PDF.
-- [ ] Gestión avanzada de usuarios.
-- [ ] Filtros por rango de fechas.
-- [ ] Indicadores por línea de producción.
-- [ ] Exportación de métricas.
+- [x] Detección automática de columnas en cualquier Excel/CSV.
+- [x] Plantillas, privacidad por usuario y compartir por correo.
+- [x] Editor de dashboards con gráficas propuestas según el tipo de columnas.
+- [ ] Pantalla de exportación (imagen, PDF, PowerPoint, CSV/Excel).
+- [ ] Clasificadores y análisis asistido.
 
 ---
 
 ## 📝 Notas
 
 - La base de datos SQLite se crea automáticamente durante la primera ejecución del backend.
-- Los archivos Excel cargados actualmente se almacenan para futuras funcionalidades de procesamiento.
-- Este proyecto se encuentra en desarrollo y puede recibir cambios en la estructura y funcionalidades.
+- - Este proyecto se encuentra en desarrollo y puede recibir cambios en la estructura y funcionalidades.
 
 ---
 
 ## 👨‍💻 Autor
 
-Desarrollado como proyecto de gestión y monitoreo de producción
+Proyecto de análisis de datos de propósito general (Excel/CSV).
 
 
 ## 🗺️ Imagenes
@@ -143,11 +143,11 @@ Desarrollado como proyecto de gestión y monitoreo de producción
 
 ![Login](images/login.png)
 
-## Dashboard Principal
+## Dashboard editable (propuesta automática)
 
 ![Dashboard](images/dashboard.png)
 
-## Módulo de Carga de Excel
+## Mis archivos y proyectos
 
 ![Archivos](images/archivos.png)
 
@@ -166,6 +166,7 @@ Desarrollado como proyecto de gestión y monitoreo de producción
 | `SUPABASE_SECRET_KEY` | Clave secreta de Supabase (`sb_secret_...`) para guardar archivos en Storage. Solo en el servidor, nunca en el frontend ni en Git. |
 | `SUPABASE_BUCKET` | Nombre del bucket privado de Storage. Por defecto `datasets`. |
 | `DB_POOL_MAX` | Conexiones máximas a la base de datos (por defecto 5). |
+| `PARQUET_CACHE_MAX_MB` | Memoria para guardar los datasets abiertos recientemente y no bajarlos del Storage en cada gráfica (por defecto 40). |
 
 **Frontend (build)**
 
@@ -177,7 +178,7 @@ Desarrollado como proyecto de gestión y monitoreo de producción
 ## Usuarios, privacidad y compartir
 
 - **Cuentas:** el administrador crea cuentas desde *Usuarios* (correo + contraseña temporal). En su primer ingreso, cada persona elige su **nombre de usuario** (único, de 3 a 20 caracteres, no se cambia después).
-- **Privacidad:** cada archivo (y lo que se calcula de él en el dashboard) es solo de quien lo subió. Ni el administrador ve los archivos de los demás.
+- **Privacidad:** cada archivo (y lo que se calcula de él) es solo de quien lo subió. Ni el administrador ve los archivos de los demás.
 - **Compartir:** el dueño puede compartir un archivo por correo electrónico (solo lectura). Si la persona aún no tiene cuenta, lo verá cuando entre con ese correo. Se puede dejar de compartir en cualquier momento.
 
 ## Cualquier Excel o CSV (datasets genéricos)
@@ -189,12 +190,24 @@ En **Mis archivos → Subir cualquier Excel o CSV** puedes subir `.xlsx`, `.xls`
 3. Al guardar se limpian los valores (`$1,234.50`, `1.234,5`, `17,3%`, fechas `dd/mm/aaaa`, números de serie de Excel) y se guarda el dataset tipado.
 4. Si marcas **guardar como plantilla**, cualquier archivo futuro con las mismas columnas (aunque cambie el orden o se agregue alguna) se interpreta solo.
 
-Los datasets siguen las mismas reglas de privacidad: solo los ve su dueño y quienes él elija por correo. Endpoints: `POST /datasets/analizar`, `GET /datasets/{id}/analisis`, `POST /datasets/{id}/confirmar`, `GET /datasets/{id}/datos`, `GET|DELETE /plantillas`.
+Los datasets siguen las mismas reglas de privacidad: solo los ve su dueño y quienes él elija por correo. Endpoints: `GET|POST /proyectos`, `PATCH|DELETE /proyectos/{id}`, `PUT /archivos/{id}/proyecto`, `POST /datasets/analizar`, `GET /datasets/{id}/analisis`, `POST /datasets/{id}/confirmar`, `GET /datasets/{id}/datos`, `GET|DELETE /plantillas`.
 
+
+## Dashboards
+
+Desde **Mis archivos → Dashboard** (o desde un proyecto) se abre el dashboard de un archivo:
+
+- **Propuesta automática:** según los roles de las columnas se arman indicadores, evolución en el tiempo, circulares, barras, Pareto, dispersión, histograma, mapa de calor y una tabla. La métrica principal es el importe/monto antes que cantidades o promedios.
+- **Modo edición** (solo el dueño): agrega, duplica, elimina y reordena gráficas (arrastrando o con ↑ ↓); cambia el tipo, las columnas, la agregación (suma, promedio, conteo, mín., máx., mediana, únicos), el desglose, la granularidad de fechas, el ancho y el color; cada gráfica puede tener sus propios filtros.
+- **Filtros globales** por fecha, rango numérico o categorías, y granularidad (día, semana, mes, trimestre, año).
+- **Vistas:** puedes guardar varias por archivo (hasta 10) y cambiar entre ellas. Quien recibe el archivo compartido ve esas vistas en solo lectura y puede filtrar sin guardar.
+- Cada gráfica tiene su versión **«Tabla»** (accesibilidad) y los colores siguen una paleta validada para daltonismo.
+
+El navegador nunca recibe las filas ni manda fórmulas: manda una *configuración* que el servidor valida contra las columnas reales del archivo (agregaciones en lista blanca, límites de tamaño) y calcula con pandas, devolviendo solo resultados ya agregados. Endpoints: `GET /datasets/{id}/dashboard`, `POST /datasets/{id}/dashboard/datos`, `GET /datasets/{id}/valores`, `POST|PUT|DELETE /datasets/{id}/dashboard[/{vista}]`.
 
 ## Configurar Supabase (producción)
 
-La aplicación guarda **usuarios, archivos, plantillas y permisos en PostgreSQL** y los **datos limpios, reportes y borradores en Supabase Storage** (formato Parquet). Sin estas variables usa SQLite y el disco local, solo apropiados para desarrollo.
+La aplicación guarda **usuarios, archivos, plantillas y permisos en PostgreSQL** y los **datos limpios y borradores en Supabase Storage** (formato Parquet). Sin estas variables usa SQLite y el disco local, solo apropiados para desarrollo.
 
 1. En [supabase.com](https://supabase.com) crea un proyecto. Anota la contraseña de la base de datos en un gestor de contraseñas.
 2. **Storage → New bucket**: nombre `datasets`, **privado** (sin marcar "Public bucket").
@@ -217,8 +230,6 @@ Notas:
 |---|---|
 | **PostgreSQL** (pequeño) | Usuarios (contraseña cifrada), una fila por archivo con sus metadatos y resumen, plantillas y con quién se comparte cada archivo |
 | **Storage** `datasets/{id}.parquet` | Los datos limpios de cada Excel/CSV genérico, en grupos de 10 000 filas (Parquet + zstd) |
-| **Storage** `reportes/{id}_reporte.parquet` | El reporte del flujo de producción que alimenta el dashboard |
-| **Storage** `reportes/{id}_reporte.xlsx` | El Excel de descarga del flujo de producción |
 | **Storage** `borradores/{id}.src` | El archivo original, solo mientras revisas las columnas (se borra al confirmar o cancelar) |
 
-Al abrir **Ver datos** solo se lee del Parquet la página pedida (no el archivo completo) y el resumen por columna se calcula una sola vez, al confirmar. Los reportes de producción se guardan en una caché en memoria (`REPORTES_CACHE_MAX`, 128 por defecto) para que el dashboard no los baje del Storage en cada consulta. Los reportes antiguos guardados en la columna `reporte_json` se siguen leyendo.
+Al abrir **Ver datos** solo se lee del Parquet la página pedida (no el archivo completo) y el resumen por columna se calcula una sola vez, al confirmar.

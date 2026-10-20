@@ -272,6 +272,25 @@ def _dayfirst(valores: list) -> bool:
     return True
 
 
+_MESES_ES = {"enero": "Jan", "ene": "Jan", "febrero": "Feb", "feb": "Feb", "marzo": "Mar", "mar": "Mar",
+             "abril": "Apr", "abr": "Apr", "mayo": "May", "may": "May", "junio": "Jun", "jun": "Jun",
+             "julio": "Jul", "jul": "Jul", "agosto": "Aug", "ago": "Aug", "septiembre": "Sep", "setiembre": "Sep",
+             "sept": "Sep", "sep": "Sep", "octubre": "Oct", "oct": "Oct", "noviembre": "Nov", "nov": "Nov",
+             "diciembre": "Dec", "dic": "Dec"}
+_RE_MES_ES = re.compile(r"\b(" + "|".join(sorted(_MESES_ES, key=len, reverse=True)) + r")\b\.?", re.IGNORECASE)
+_RE_DE = re.compile(r"\s+de\s+", re.IGNORECASE)
+
+
+def _meses_es_a_en(t: str) -> str:
+    """'12 de abril de 2026' / '12-abr-26' → '12 Apr 2026' / '12-Apr-26' (pandas entiende los meses en inglés)."""
+    if not re.search(r"[A-Za-zÁÉÍÓÚáéíóú]", t):
+        return t
+    t2 = _RE_MES_ES.sub(lambda m: _MESES_ES[m.group(1).lower()], t)
+    if t2 == t:
+        return t
+    return _RE_DE.sub(" ", t2)
+
+
 def _a_fecha(serie: pd.Series) -> pd.Series:
     """Convierte a datetime64; lo que no se pueda queda NaT."""
     if pd.api.types.is_datetime64_any_dtype(serie):
@@ -286,15 +305,27 @@ def _a_fecha(serie: pd.Series) -> pd.Series:
     nums = _a_numero(serie)
     if nums.notna().mean() > 0.9 and nums.dropna().between(20000, 80000).all():
         return pd.to_datetime("1899-12-30") + pd.to_timedelta(nums, unit="D")
-    texto = serie.map(lambda v: np.nan if _vacio(v) else str(v).strip())
+    texto = serie.map(lambda v: np.nan if _vacio(v) else _meses_es_a_en(str(v).strip()))
     df_first = _dayfirst(list(texto.dropna().head(500)))
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        try:
-            out = pd.to_datetime(texto, errors="coerce", dayfirst=df_first, format="mixed")
-        except (TypeError, ValueError):
-            out = pd.to_datetime(texto, errors="coerce", dayfirst=df_first)
-    return out
+
+    def convertir(t, dayfirst):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                return pd.to_datetime(t, errors="coerce", dayfirst=dayfirst, format="mixed")
+            except (TypeError, ValueError):
+                return pd.to_datetime(t, errors="coerce", dayfirst=dayfirst)
+
+    # aaaa-mm-dd (ISO, año primero) es siempre año-mes-día: dayfirst NO debe aplicarse (invertiría 2026-04-12)
+    iso = texto.str.match(r"^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}", na=False)
+    if iso.all():
+        return convertir(texto, False)
+    if iso.any():
+        out = pd.Series(pd.NaT, index=texto.index, dtype="datetime64[ns]")
+        out[iso] = convertir(texto[iso], False)
+        out[~iso] = convertir(texto[~iso], df_first)
+        return out
+    return convertir(texto, df_first)
 
 
 def _proporcion_fechas(serie: pd.Series) -> float:
@@ -308,7 +339,8 @@ def _proporcion_fechas(serie: pd.Series) -> float:
     if all(es_obj_fecha):
         return 1.0
     # un valor suelto que solo "parece" número no es fecha: exigir separadores o mes escrito
-    cand = muestra[[bool(_RE_FECHA_TXT.search(str(v))) for v in muestra]]
+    cand = muestra[[bool(_RE_FECHA_TXT.search(str(v)) or (_RE_MES_ES.search(str(v)) and re.search(r"\d", str(v))))
+                    for v in muestra]]
     if len(cand) < 0.8 * len(muestra):
         return 0.0
     parsed = _a_fecha(cand)

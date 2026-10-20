@@ -1,5 +1,8 @@
+import { useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import { useProyectos } from '../context/ProyectosContext'
+import api from '../services/api'
 
 const navItems = [
   {
@@ -14,11 +17,22 @@ const navItems = [
   },
 ]
 
-const lineas = ['A', 'B', 'C', 'D', 'E']
-
 export default function Sidebar() {
   const { usuario, logout } = useAuth()
   const navigate = useNavigate()
+  const { proyectos, recargar } = useProyectos()
+  const [creando, setCreando] = useState(false)
+  const [nuevo,   setNuevo]   = useState('')
+  const [errorPr, setErrorPr] = useState('')
+
+  const crearProyecto = async (e) => {
+    e.preventDefault(); setErrorPr('')
+    try {
+      const r = await api.post('/proyectos', { nombre: nuevo })
+      await recargar(); setCreando(false); setNuevo('')
+      navigate(`/proyecto/${r.data.id}`)
+    } catch (err) { setErrorPr(err.response?.data?.detail || 'No se pudo crear') }
+  }
 
   const handleLogout = () => {
     logout()
@@ -95,24 +109,41 @@ export default function Sidebar() {
           </NavLink>
         )}
 
-        <p className="text-xs text-gray-400 px-2 pt-4 pb-2 uppercase tracking-wider">Líneas</p>
-        {lineas.map(l => (
-          <NavLink
-            key={l}
-            to={`/linea/${l}`}
+        {/* Proyectos: carpetas propias para agrupar archivos */}
+        <div className="flex items-center justify-between px-2 pt-5 pb-2">
+          <p className="text-xs text-gray-400 uppercase tracking-wider">Proyectos</p>
+          <button onClick={() => { setCreando(c => !c); setErrorPr('') }} title="Nuevo proyecto" aria-label="Nuevo proyecto"
+            className="w-5 h-5 rounded flex items-center justify-center text-gray-400 hover:text-brand-600 hover:bg-brand-50">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+          </button>
+        </div>
+        {creando && (
+          <form onSubmit={crearProyecto} className="px-1 pb-2">
+            <input autoFocus value={nuevo} onChange={e => setNuevo(e.target.value)} maxLength={40}
+              placeholder="Nombre del proyecto" aria-label="Nombre del nuevo proyecto" className="input py-1.5 text-sm" />
+            {errorPr && <p className="text-xs text-red-600 mt-1">{errorPr}</p>}
+            <div className="flex gap-1 mt-1.5">
+              <button type="submit" className="btn-primary text-xs py-1 flex-1 justify-center">Crear</button>
+              <button type="button" className="btn-ghost text-xs" onClick={() => { setCreando(false); setNuevo(''); setErrorPr('') }}>Cancelar</button>
+            </div>
+          </form>
+        )}
+        {proyectos.length === 0 && !creando && (
+          <p className="text-xs text-gray-400 px-3 leading-relaxed">Crea un proyecto con “+” para agrupar tus archivos.</p>
+        )}
+        {proyectos.map(p => (
+          <NavLink key={p.id} to={`/proyecto/${p.id}`}
             className={({ isActive }) =>
               `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors duration-100 ` +
-              (isActive
-                ? 'bg-brand-50 text-brand-700 font-medium'
-                : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50')
-            }
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              (isActive ? 'bg-brand-50 text-brand-700 font-medium' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50')}>
+            <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
             </svg>
-            Línea {l}
+            <span className="truncate flex-1">{p.nombre}</span>
+            <span className="text-xs text-gray-400">{p.num_archivos}</span>
           </NavLink>
         ))}
       </nav>
