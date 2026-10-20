@@ -37,7 +37,7 @@ project_tachyon/
 ├── frontend/
 │   └── src/
 │       ├── App.jsx        Rutas
-│       ├── shared/        Cliente de la API y piezas comunes (layout, menú lateral)
+│       ├── shared/        Cliente de la API y piezas comunes (layout, menú lateral, PageHeader, FilaArchivo, Vacio, Cargando)
 │       └── features/      Una carpeta por funcionalidad, cada una con sus pages/ y components/
 │           ├── auth/        Sesión, login y nombre de usuario
 │           ├── archivos/    Mis archivos, subida, revisión de columnas, compartir y visor de datos
@@ -49,7 +49,7 @@ project_tachyon/
 └── images/                Capturas del README
 ```
 
-Dentro del frontend, los imports entre carpetas usan el alias `@` (`@/features/dashboard/lib/dash` = `frontend/src/features/dashboard/lib/dash`). Una funcionalidad puede usar `shared/` y otras funcionalidades, pero `shared/` no depende de ellas salvo el menú lateral.
+Dentro del frontend, los imports entre carpetas usan el alias `@` (`@/features/dashboard/lib/dash` = `frontend/src/features/dashboard/lib/dash`). Todas las páginas usan el mismo `PageHeader` (migas, título, acciones) y la jerarquía de botones de `index.css`: `btn-primary` (acción principal), `btn-secondary` (habitual), `btn-ghost` (terciaria) y `btn-danger` (destructiva). Una funcionalidad puede usar `shared/` y otras funcionalidades, pero `shared/` no depende de ellas salvo el menú lateral.
 
 ## Inicio rápido
 
@@ -129,6 +129,8 @@ Cada suite (`backend/tests/suite_*.py`) también se puede correr sola con `pytho
 ## Usuarios, privacidad y compartir
 
 - **Cuentas:** el administrador crea cuentas desde *Usuarios* (correo + contraseña temporal). En su primer ingreso, cada persona elige su **nombre de usuario** (único, de 3 a 20 caracteres, no se cambia después).
+- **Foto de perfil:** cada persona puede subir la suya haciendo clic en su nombre (abajo del menú). El navegador la recorta en cuadrado y la reduce a 256 px; el servidor valida el tipo real (JPG, PNG o WebP, máx. 300 KB) y la guarda en el almacenamiento (`avatares/`). La ven su dueño y los administradores.
+- **Eliminar cuentas:** el administrador puede eliminar una cuenta desde *Usuarios* (con confirmación; no la propia). Se borran sus archivos —también del almacenamiento—, proyectos, dashboards, plantillas, foto y los accesos compartidos por y hacia su correo, de modo que quien se registre después con ese correo empieza de cero. Es irreversible. «Desactivar» bloquea el acceso sin borrar nada.
 - **Privacidad:** cada archivo (y lo que se calcula de él) es solo de quien lo subió. Ni el administrador ve los archivos de los demás.
 - **Compartir:** el dueño puede compartir un archivo por correo electrónico (solo lectura). Si la persona aún no tiene cuenta, lo verá cuando entre con ese correo. Se puede dejar de compartir en cualquier momento.
 

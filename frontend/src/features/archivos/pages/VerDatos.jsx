@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import api from '@/shared/api'
+import PageHeader from '@/shared/components/PageHeader'
+import Cargando from '@/shared/components/Cargando'
 
 const ETIQUETA_ROL = { fecha: 'Fecha', numero: 'Número', categoria: 'Categoría', identificador: 'Identificador', estado: 'Estado', texto: 'Texto' }
 const fmt = (n) => (n === undefined || n === null) ? '' : Number(n).toLocaleString('es-MX', { maximumFractionDigits: 2 })
@@ -56,21 +58,15 @@ export default function VerDatos() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <header className="bg-white border-b border-gray-100 px-6 py-4 flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-base font-semibold text-gray-900 truncate">{datos?.archivo.nombre || 'Datos'}</h1>
-          {datos && <p className="text-xs text-gray-400 mt-0.5">{datos.total.toLocaleString()} filas · {datos.columnas.length} columnas
-            {!datos.archivo.es_mio && ' · compartido contigo (solo lectura)'}</p>}
-        </div>
-        <div className="flex items-center gap-1 flex-shrink-0">
-          <Link to={`/datos/${id}/dashboard`} className="btn-ghost text-xs text-brand-600 hover:bg-brand-50">Dashboard</Link>
-          <Link to="/archivos" className="btn-ghost text-xs">← Mis archivos</Link>
-        </div>
-      </header>
+      <PageHeader
+        migas={[{ texto: 'Archivos', to: '/archivos' }, { texto: datos?.archivo.nombre || 'Datos' }]}
+        titulo="Datos"
+        subtitulo={datos && `${datos.total.toLocaleString('es-MX')} filas · ${datos.columnas.length} columnas${!datos.archivo.es_mio ? ' · compartido contigo (solo lectura)' : ''}`}
+        acciones={<Link to={`/datos/${id}/dashboard`} className="btn-secondary text-xs">Ver dashboard</Link>} />
 
-      <main className="flex-1 overflow-y-auto p-6 space-y-5">
+      <main className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5">
         {error && <div className="px-4 py-3 rounded-lg text-sm bg-red-50 text-red-700">{error}</div>}
-        {!datos && !error && <div className="w-6 h-6 border-2 border-brand-600 border-t-transparent rounded-full animate-spin" />}
+        {!datos && !error && <Cargando />}
         {datos && (
           <>
             <section aria-label="Resumen por columna" className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">

@@ -1,11 +1,10 @@
 """Lista y borrado de archivos."""
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
-from core import storage
 from core.db import get_db
 from core.seguridad import get_usuario_actual
 from core.acceso import cond_visible, archivo_propio
-from servicios.parquet import olvidar_parquet
+from servicios.cuentas import quitar_archivo, limpiar_almacenamiento
 
 router = APIRouter(tags=["Archivos"])
 
@@ -51,14 +50,9 @@ def eliminar_archivo(archivo_id: int, u=Depends(get_usuario_actual)):
     except HTTPException:
         conn.close(); raise
 
-    conn.execute("DELETE FROM comparticiones WHERE archivo_id=?", (archivo_id,))
-    conn.execute("DELETE FROM dashboards WHERE archivo_id=?", (archivo_id,))
-    conn.execute("DELETE FROM archivos WHERE id=?", (archivo_id,))
+    rutas = quitar_archivo(conn, archivo_id)
     conn.commit()
     conn.close()
-    olvidar_parquet(archivo_id)
-
-    for ruta in (f"datasets/{archivo_id}.parquet", f"borradores/{archivo_id}.src"):
-        storage.delete(ruta)
+    limpiar_almacenamiento(archivo_id, rutas)
 
     return {"mensaje": "Archivo eliminado correctamente", "archivo_id": archivo_id}
