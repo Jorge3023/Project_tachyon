@@ -1,61 +1,71 @@
 # Project_Tachyon
 
-Plataforma web para analizar **cualquier Excel o CSV**: sube un archivo, el sistema detecta el tipo de cada columna, tú lo revisas y queda guardado de forma privada, listo para consultarlo, compartirlo en solo lectura y (próximamente) armar dashboards a tu medida y exportarlos.
+![CI](https://github.com/Jorge3023/Project_tachyon/actions/workflows/ci.yml/badge.svg)
 
----
+Plataforma web para analizar **cualquier Excel o CSV**: sube un archivo, el sistema detecta el tipo de cada columna, tú lo revisas y queda guardado de forma privada. Después armas dashboards a tu medida (con mapa incluido), los compartes en solo lectura y los exportas a imagen, PDF, PowerPoint, Excel o CSV.
 
-## 🚀 Tecnologías utilizadas
+## Funcionalidades
 
-### Backend
-- FastAPI
-- SQLite
-- Pandas
-- Python 3.10+
+- Inicio de sesión con cuentas creadas por el administrador; datos privados por usuario y compartir por correo (solo lectura).
+- Subida de cualquier Excel o CSV con detección automática de columnas y revisión manual; **plantillas** para reconocer solos los archivos con las mismas columnas.
+- **Proyectos**: carpetas personales para agrupar archivos.
+- Visor de datos por páginas con resumen por columna.
+- **Dashboards editables** por archivo: propuesta automática, 11 tipos de gráfica (incluido **mapa geográfico**), filtros, varias vistas guardadas, arrastre animado y un **dashboard principal** que se abre al entrar.
+- **Exportación** a PNG, PDF, PowerPoint, Excel y CSV desde una pantalla con vista previa.
 
-### Frontend
-- React
-- Vite
-- Tailwind CSS
-- Axios
-- Node.js 18+
+## Tecnologías
 
----
+| Parte | Con qué |
+|---|---|
+| Backend | Python 3.12, FastAPI, pandas, pyarrow (Parquet), openpyxl, JWT |
+| Datos | SQLite en desarrollo; PostgreSQL y almacenamiento de archivos en Supabase en producción |
+| Frontend | React 18, Vite, Tailwind CSS, React Router, Recharts, Leaflet |
+| Exportación (navegador) | html-to-image, jsPDF, pptxgenjs, JSZip (se descargan solo al exportar) |
+| Despliegue | Cloudflare (frontend), Render (API), Supabase (PostgreSQL y Storage) |
 
-## 📋 Requisitos
+## Estructura del proyecto
 
-Antes de ejecutar el proyecto asegúrate de tener instalado:
+```text
+project_tachyon/
+├── backend/
+│   ├── main.py            Crea la app, CORS y registra los routers (punto de entrada: `main:app`)
+│   ├── core/              Base de datos, almacenamiento, sesiones, permisos, migraciones y configuración
+│   ├── servicios/         Lógica de datos sin HTTP: detector de columnas, motor de dashboards, exportación, Parquet
+│   ├── routers/           Endpoints agrupados por tema (auth, archivos, datasets, dashboards, exportación…)
+│   ├── tests/             Suites de pruebas (pytest) y servidor falso de Supabase
+│   └── requirements.txt
+├── frontend/
+│   └── src/
+│       ├── App.jsx        Rutas
+│       ├── shared/        Cliente de la API y piezas comunes (layout, menú lateral)
+│       └── features/      Una carpeta por funcionalidad, cada una con sus pages/ y components/
+│           ├── auth/        Sesión, login y nombre de usuario
+│           ├── archivos/    Mis archivos, subida, revisión de columnas, compartir y visor de datos
+│           ├── proyectos/   Proyectos
+│           ├── usuarios/    Administración de usuarios y estado del sistema
+│           ├── dashboard/   Editor, gráficas, mapa, filtros y dashboard principal
+│           └── exportar/    Pantalla de exportación (imagen, PDF, PowerPoint)
+├── .github/workflows/ci.yml   Pruebas del backend (SQLite y PostgreSQL) y compilación del frontend
+└── images/                Capturas del README
+```
 
-- Python 3.10 o superior
-- Node.js 18 o superior
-- npm
+Dentro del frontend, los imports entre carpetas usan el alias `@` (`@/features/dashboard/lib/dash` = `frontend/src/features/dashboard/lib/dash`). Una funcionalidad puede usar `shared/` y otras funcionalidades, pero `shared/` no depende de ellas salvo el menú lateral.
 
----
+## Inicio rápido
 
-### 2. Configurar el Backend
+Necesitas Python 3.12 y Node.js 18 o superior.
+
+**1. Backend**
 
 ```bash
 cd backend
 pip install -r requirements.txt
-python main.py
+SEED_DEMO_USERS=1 python main.py          # en PowerShell: $env:SEED_DEMO_USERS="1"; python main.py
 ```
 
-El backend estará disponible en:
+API en `http://localhost:8000` y documentación interactiva en `http://localhost:8000/docs`. `SEED_DEMO_USERS=1` crea cuentas de demostración **solo para desarrollo** (por ejemplo `mrodriguez@empresa.com` / `operador123`); en producción usa `ADMIN_EMAIL` y `ADMIN_PASSWORD`. La base SQLite (`tachyon.db`) se crea sola.
 
-```text
-http://localhost:8000
-```
-
-Documentación automática de la API:
-
-```text
-http://localhost:8000/docs
-```
-
----
-
-### 3. Configurar el Frontend
-
-Abrir una nueva terminal:
+**2. Frontend** (otra terminal)
 
 ```bash
 cd frontend
@@ -63,91 +73,31 @@ npm install
 npm run dev
 ```
 
-La aplicación estará disponible en:
+Aplicación en `http://localhost:5173`.
 
-```text
-http://localhost:5173
+## Pruebas
+
+```bash
+cd backend
+pip install pytest
+python -m pytest tests -v                  # todas las suites con SQLite
+# además contra PostgreSQL (cada suite crea y borra su propia base):
+TEST_PG_ADMIN_URL=postgresql://usuario:clave@localhost:5432/postgres python -m pytest tests -v
 ```
 
----
+Cada suite (`backend/tests/suite_*.py`) también se puede correr sola con `python backend/tests/suite_dashboard.py`. En GitHub, el flujo **CI** corre todo esto y compila el frontend en cada pull request.
 
-## ✨ Funcionalidades actuales
+## Capturas
 
-- Inicio de sesión con cuentas creadas por el administrador.
-- Subida de cualquier Excel o CSV con detección automática de columnas y revisión manual.
-- Plantillas guardadas: un archivo con las mismas columnas se interpreta solo.
-- **Proyectos**: carpetas personales para agrupar archivos (se crean con “+” en la barra lateral; borrar un proyecto no borra sus archivos).
-- Visor de datos por páginas con resumen por columna.
-- **Dashboards editables por archivo**: propuesta automática según el tipo de cada columna y editor propio (ver abajo).
-- Datos privados por usuario y compartir por correo (solo lectura).
-- API REST desarrollada con FastAPI.
-- Interfaz desarrollada con React y Tailwind CSS.
-
----
-
-## 📁 Estructura del proyecto
-
-```text
-project_tachyon/
-│
-├── backend/
-│   ├── main.py
-│   ├── db.py
-│   ├── storage.py
-│   ├── requirements.txt
-│   └── tachyon.db (solo en desarrollo; se genera automáticamente)
-│
-├── frontend/
-│   ├── src/
-│   │   ├── pages/
-│   │   ├── components/
-│   │   ├── context/
-│   │   ├── services/
-│   │   └── index.css
-│   │
-│   ├── package.json
-│   ├── vite.config.js
-│   ├── tailwind.config.js
-│   └── postcss.config.js
-│
-└── README.md
-```
-
----
-
-## Próximas funcionalidades
-
-- [x] Detección automática de columnas en cualquier Excel/CSV.
-- [x] Plantillas, privacidad por usuario y compartir por correo.
-- [x] Editor de dashboards con gráficas propuestas según el tipo de columnas.
-- [x] Pantalla de exportación (imagen, PDF, PowerPoint, CSV/Excel).
-- [ ] Clasificadores y análisis asistido.
-
----
-
-## 📝 Notas
-
-- La base de datos SQLite se crea automáticamente durante la primera ejecución del backend.
-- - Este proyecto se encuentra en desarrollo y puede recibir cambios en la estructura y funcionalidades.
-
----
-
-## 👨‍💻 Autor
-
-Proyecto de análisis de datos de propósito general (Excel/CSV).
-
-
-## 🗺️ Imagenes
-
-## Login
+**Login**
 
 ![Login](images/login.png)
 
-## Dashboard editable (propuesta automática)
+**Dashboard editable (propuesta automática)**
 
 ![Dashboard](images/dashboard.png)
 
-## Mis archivos y proyectos
+**Mis archivos y proyectos**
 
 ![Archivos](images/archivos.png)
 
@@ -247,3 +197,12 @@ Notas:
 | **Storage** `borradores/{id}.src` | El archivo original, solo mientras revisas las columnas (se borra al confirmar o cancelar) |
 
 Al abrir **Ver datos** solo se lee del Parquet la página pedida (no el archivo completo) y el resumen por columna se calcula una sola vez, al confirmar.
+
+## Hoja de ruta
+
+- [x] Detección automática de columnas en cualquier Excel/CSV.
+- [x] Plantillas, privacidad por usuario y compartir por correo.
+- [x] Editor de dashboards con gráficas propuestas según el tipo de columnas.
+- [x] Mapa geográfico, dashboard principal y arrastre animado.
+- [x] Exportación (imagen, PDF, PowerPoint, CSV/Excel).
+- [ ] Clasificadores y análisis asistido.
