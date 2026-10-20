@@ -25,6 +25,9 @@ def init_db():
     # Dashboard que cada usuario ve al entrar: {"archivo_id": n, "vista_id": n|null}
     if "dashboard_principal" not in db.columnas(conn, "usuarios"):
         cur.execute("ALTER TABLE usuarios ADD COLUMN dashboard_principal TEXT")
+    # Foto de perfil: 0 = sin foto; si no, versión (marca de tiempo) para que el navegador no use una copia vieja
+    if "avatar_v" not in db.columnas(conn, "usuarios"):
+        cur.execute("ALTER TABLE usuarios ADD COLUMN avatar_v INTEGER DEFAULT 0")
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_username "
                 "ON usuarios(lower(username)) WHERE username IS NOT NULL")
     # Archivos genéricos (cualquier Excel/CSV): tipo, esquema de columnas confirmado y huella de columnas

@@ -7,6 +7,7 @@ from core import db, storage
 from core.validacion import EMAIL_RE
 from core.db import get_db
 from core.seguridad import require_admin
+from servicios.cuentas import borrar_usuario
 
 router = APIRouter(tags=["Administración"])
 
@@ -44,7 +45,7 @@ def diagnostico(u=Depends(require_admin)):
 @router.get("/usuarios")
 def listar_usuarios(u=Depends(require_admin)):
     conn = get_db()
-    rows = conn.execute("SELECT id,nombre,username,correo,rol,activo,creado_en FROM usuarios ORDER BY id").fetchall()
+    rows = conn.execute("SELECT id,nombre,username,correo,rol,activo,creado_en,avatar_v FROM usuarios ORDER BY id").fetchall()
     conn.close()
     return [{**dict(r), "pendiente_username": not r["username"]} for r in rows]
 
@@ -92,3 +93,18 @@ def activar_usuario(usuario_id: int, datos: ActivoIn, u=Depends(require_admin)):
     finally:
         conn.close()
     return {"id": usuario_id, "activo": datos.activo}
+
+@router.delete("/usuarios/{usuario_id}")
+def eliminar_usuario(usuario_id: int, u=Depends(require_admin)):
+    """Borra la cuenta y todo lo suyo (archivos, proyectos, dashboards, accesos compartidos y foto). No se puede deshacer."""
+    if usuario_id == u["id"]:
+        raise HTTPException(status_code=422, detail="No puedes eliminar tu propia cuenta")
+    conn = get_db()
+    try:
+        objetivo = conn.execute("SELECT * FROM usuarios WHERE id=?", (usuario_id,)).fetchone()
+        if not objetivo:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        n = borrar_usuario(conn, dict(objetivo))
+    finally:
+        conn.close()
+    return {"mensaje": "Cuenta eliminada", "id": usuario_id, "archivos_eliminados": n}
