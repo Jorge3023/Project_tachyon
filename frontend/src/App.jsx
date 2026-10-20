@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import AppLayout from './components/AppLayout'
@@ -8,6 +9,8 @@ import ElegirUsername from './pages/ElegirUsername'
 import Usuarios from './pages/Usuarios'
 import VerDatos from './pages/VerDatos'
 import Proyecto from './pages/Proyecto'
+// El editor trae las librerías de gráficas: se carga solo cuando se abre un dashboard
+const DashboardEditor = lazy(() => import('./pages/DashboardEditor'))
 import { ProyectosProvider } from './context/ProyectosContext'
 
 function PrivateRoute({ children }) {
@@ -44,6 +47,15 @@ function AppRoutes() {
       <Route path="/archivos" element={
         <PrivateRoute>
           <AppLayout><Archivos /></AppLayout>
+        </PrivateRoute>
+      } />
+      <Route path="/datos/:id/dashboard" element={
+        <PrivateRoute>
+          <AppLayout>
+            <Suspense fallback={<div className="flex-1 flex items-center justify-center"><div className="w-6 h-6 border-2 border-brand-600 border-t-transparent rounded-full animate-spin" /></div>}>
+              <DashboardEditor />
+            </Suspense>
+          </AppLayout>
         </PrivateRoute>
       } />
       <Route path="/datos/:id" element={

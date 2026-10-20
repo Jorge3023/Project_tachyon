@@ -134,10 +134,16 @@ export default function Archivos() {
                         </button>
                       )}
                       {a.estado === 'procesado' && (
-                        <button onClick={() => navigate(`/datos/${a.id}`)}
-                          className="btn-ghost text-brand-600 hover:text-brand-700 hover:bg-brand-50 text-xs">
-                          Ver datos
-                        </button>
+                        <>
+                          <button onClick={() => navigate(`/datos/${a.id}/dashboard`)}
+                            className="btn-ghost text-brand-600 hover:text-brand-700 hover:bg-brand-50 text-xs">
+                            Dashboard
+                          </button>
+                          <button onClick={() => navigate(`/datos/${a.id}`)}
+                            className="btn-ghost text-gray-500 text-xs">
+                            Ver datos
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>

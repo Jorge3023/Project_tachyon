@@ -4,8 +4,10 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import JSONResponse
 from datetime import datetime, timedelta
 from typing import Optional, List
-import jwt, bcrypt, json, os, io, warnings, re
+import jwt, bcrypt, json, os, io, warnings, re, threading
+from collections import OrderedDict
 from pydantic import BaseModel
+import dashboard as dash
 import detector
 import db
 import storage
@@ -92,6 +94,12 @@ def init_db():
         owner_id INTEGER NOT NULL, nombre TEXT NOT NULL, creado_en {TS})"""))
     cur.execute("CREATE INDEX IF NOT EXISTS idx_proyectos_owner ON proyectos(owner_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_archivos_proyecto ON archivos(proyecto_id)")
+    # Vistas de dashboard: configuración (gráficas + filtros) guardada por archivo; la edita solo el dueño
+    cur.execute(db.ddl("""CREATE TABLE IF NOT EXISTS dashboards (
+        id {PK},
+        archivo_id INTEGER NOT NULL, owner_id INTEGER NOT NULL, nombre TEXT NOT NULL, config_json TEXT NOT NULL,
+        creado_en {TS}, actualizado_en {TS})"""))
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_dashboards_archivo ON dashboards(archivo_id)")
     # Archivos compartidos con otras personas por correo (solo lectura)
     cur.execute(db.ddl("""CREATE TABLE IF NOT EXISTS comparticiones (
         id {PK},
@@ -398,9 +406,11 @@ def eliminar_archivo(archivo_id: int, u=Depends(get_usuario_actual)):
         conn.close(); raise
 
     conn.execute("DELETE FROM comparticiones WHERE archivo_id=?", (archivo_id,))
+    conn.execute("DELETE FROM dashboards WHERE archivo_id=?", (archivo_id,))
     conn.execute("DELETE FROM archivos WHERE id=?", (archivo_id,))
     conn.commit()
     conn.close()
+    _olvidar_parquet(archivo_id)
 
     for ruta in (f"datasets/{archivo_id}.parquet", f"borradores/{archivo_id}.src"):
         storage.delete(ruta)
@@ -692,13 +702,41 @@ def confirmar_dataset(archivo_id: int, datos: ConfirmarIn, u=Depends(get_usuario
 
 FILAS_POR_GRUPO = 10_000     # filas por grupo dentro de cada Parquet de datasets
 
-def _datos_dataset(a):
-    """(esquema, bytes del Parquet comprimido) de un dataset procesado; 404 si no está disponible."""
+# Caché pequeña de Parquets recientes (un dataset confirmado nunca cambia): evita bajar de Storage el mismo archivo
+# en cada gráfica o página. Se llama solo después de comprobar que el usuario puede ver el archivo.
+_PARQUET_CACHE: "OrderedDict[int, bytes]" = OrderedDict()
+_PARQUET_CACHE_LOCK = threading.Lock()
+PARQUET_CACHE_MAX_BYTES = int(os.getenv("PARQUET_CACHE_MAX_MB", "40")) * 1024 * 1024
+
+def _olvidar_parquet(archivo_id):
+    with _PARQUET_CACHE_LOCK:
+        _PARQUET_CACHE.pop(archivo_id, None)
+
+def _parquet_bytes(archivo_id):
+    with _PARQUET_CACHE_LOCK:
+        if archivo_id in _PARQUET_CACHE:
+            _PARQUET_CACHE.move_to_end(archivo_id)
+            return _PARQUET_CACHE[archivo_id]
+    datos = storage.get(f"datasets/{archivo_id}.parquet")
+    if len(datos) <= PARQUET_CACHE_MAX_BYTES:
+        with _PARQUET_CACHE_LOCK:
+            _PARQUET_CACHE[archivo_id] = datos
+            while sum(len(v) for v in _PARQUET_CACHE.values()) > PARQUET_CACHE_MAX_BYTES:
+                _PARQUET_CACHE.popitem(last=False)
+    return datos
+
+def _esquema_dataset(a):
+    """Esquema (columnas confirmadas) de un dataset procesado; 404 si no está disponible."""
     esquema = json.loads(a["esquema_json"] or "{}").get("columnas", [])
     if a["tipo"] != "generico" or a["estado"] != "procesado" or not esquema:
         raise HTTPException(status_code=404, detail="Datos no disponibles")
+    return esquema
+
+def _datos_dataset(a):
+    """(esquema, bytes del Parquet comprimido) de un dataset procesado; 404 si no está disponible."""
+    esquema = _esquema_dataset(a)
     try:
-        return esquema, storage.get(f"datasets/{a['id']}.parquet")
+        return esquema, _parquet_bytes(a["id"])
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Datos no disponibles")
 
@@ -756,6 +794,165 @@ def ver_dataset(archivo_id: int, pagina: int = Query(1, ge=1), por_pagina: int =
     })
 
 # ── Plantillas guardadas (privadas de cada usuario)
+# ── Dashboards (vistas por archivo) ─────────────────────────────────────────────────────────────────
+# La configuración (gráficas + filtros) se valida contra el esquema real del archivo y se calcula aquí, en el
+# servidor: el navegador solo recibe resultados agregados. Ven las vistas el dueño y con quien se compartió el
+# archivo (solo lectura); solo el dueño las crea, edita o borra.
+MAX_VISTAS = 10
+
+class ConfigDashIn(BaseModel):
+    config: dict
+
+class VistaIn(BaseModel):
+    nombre: Optional[str] = None
+    config: Optional[dict] = None
+
+def _nombre_vista(texto):
+    n = " ".join((texto or "").split())
+    if not 1 <= len(n) <= 40:
+        raise HTTPException(status_code=422, detail="El nombre de la vista debe tener entre 1 y 40 caracteres")
+    return n
+
+def _config_limpia(config, esquema):
+    try:
+        return dash.limpiar_config(config, esquema)
+    except dash.ConfigInvalida as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+def _vista_de(conn, a, vista_id):
+    v = conn.execute("SELECT * FROM dashboards WHERE id=? AND archivo_id=?", (vista_id, a["id"])).fetchone()
+    if not v:
+        raise HTTPException(status_code=404, detail="Vista no encontrada")
+    return v
+
+def _lista_vistas(conn, a):
+    return [{"id": r["id"], "nombre": r["nombre"]} for r in
+            conn.execute("SELECT id, nombre FROM dashboards WHERE archivo_id=? ORDER BY id", (a["id"],)).fetchall()]
+
+@app.get("/datasets/{archivo_id}/dashboard")
+def ver_dashboard(archivo_id: int, vista: Optional[int] = None, u=Depends(get_usuario_actual)):
+    """Vista guardada (la pedida o la primera) o, si el archivo aún no tiene ninguna, la propuesta automática."""
+    conn = get_db()
+    try:
+        a = _archivo_con_acceso(conn, archivo_id, u)
+        esquema = _esquema_dataset(a)
+        vistas = _lista_vistas(conn, a)
+        config, actual = None, None
+        if vista is not None:
+            actual = _vista_de(conn, a, vista)
+        elif vistas:
+            actual = _vista_de(conn, a, vistas[0]["id"])
+        if actual is not None:
+            try:
+                config = dash.limpiar_config(json.loads(actual["config_json"]), esquema)
+            except (dash.ConfigInvalida, ValueError):
+                config = None                      # configuración dañada: se muestra la propuesta
+        guardada = config is not None
+        if config is None:
+            resumen = json.loads(a["resumen_json"]) if a["resumen_json"] else []
+            config = dash.limpiar_config(dash.sugerir(esquema, resumen), esquema)
+        return {"archivo": {"id": a["id"], "nombre": a["nombre"], "filas": a["filas"], "es_mio": a["subido_por"] == u["id"]},
+                "vistas": vistas,
+                "vista": {"id": actual["id"] if guardada else None,
+                          "nombre": actual["nombre"] if guardada else "Resumen sugerido", "guardada": guardada},
+                "config": config,
+                "columnas": [{"nombre": c["nombre"], "rol": c["rol"]} for c in esquema if c["rol"] != "ignorar"]}
+    finally:
+        conn.close()
+
+@app.post("/datasets/{archivo_id}/dashboard/datos")
+def datos_dashboard(archivo_id: int, datos: ConfigDashIn, u=Depends(get_usuario_actual)):
+    """Calcula las gráficas de una configuración (guardada o en edición) sobre el archivo, ya filtrado y agregado."""
+    import pandas as pd
+    import pyarrow.parquet as pq
+    conn = get_db()
+    try:
+        a = _archivo_con_acceso(conn, archivo_id, u)
+    finally:
+        conn.close()
+    esquema, parquet = _datos_dataset(a)
+    config = _config_limpia(datos.config, esquema)
+    cols = dash.columnas_usadas(config)
+    pf = pq.ParquetFile(io.BytesIO(parquet))
+    if cols:
+        df = pf.read(columns=cols).to_pandas()
+    else:
+        df = pd.DataFrame(index=range(pf.metadata.num_rows))
+    out = dash.calcular(df, config, esquema)
+    out["config"] = config
+    return out
+
+@app.get("/datasets/{archivo_id}/valores")
+def valores_columna(archivo_id: int, columna: str, u=Depends(get_usuario_actual)):
+    """Valores posibles de una columna (para armar filtros): categorías más frecuentes, o mínimo y máximo."""
+    import pyarrow.parquet as pq
+    conn = get_db()
+    try:
+        a = _archivo_con_acceso(conn, archivo_id, u)
+    finally:
+        conn.close()
+    esquema, parquet = _datos_dataset(a)
+    roles = {c["nombre"]: c["rol"] for c in esquema if c["rol"] != "ignorar"}
+    if columna not in roles:
+        raise HTTPException(status_code=404, detail="Columna no encontrada")
+    serie = pq.ParquetFile(io.BytesIO(parquet)).read(columns=[columna]).to_pandas()[columna]
+    return dash.valores_columna(serie, roles[columna])
+
+@app.post("/datasets/{archivo_id}/dashboard")
+def crear_vista(archivo_id: int, datos: VistaIn, u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        a = _archivo_propio(conn, archivo_id, u)
+        esquema = _esquema_dataset(a)
+        nombre = _nombre_vista(datos.nombre)
+        vistas = _lista_vistas(conn, a)
+        if len(vistas) >= MAX_VISTAS:
+            raise HTTPException(status_code=422, detail=f"Máximo {MAX_VISTAS} vistas por archivo")
+        if any(v["nombre"].lower() == nombre.lower() for v in vistas):
+            raise HTTPException(status_code=409, detail="Ya hay una vista con ese nombre")
+        if datos.config is None:
+            resumen = json.loads(a["resumen_json"]) if a["resumen_json"] else []
+            datos.config = dash.sugerir(esquema, resumen)
+        config = _config_limpia(datos.config, esquema)
+        cur = conn.execute("INSERT INTO dashboards (archivo_id, owner_id, nombre, config_json) VALUES (?,?,?,?)",
+                           (archivo_id, u["id"], nombre, json.dumps(config)))
+        vid = cur.lastrowid; conn.commit()
+    finally:
+        conn.close()
+    return {"id": vid, "nombre": nombre, "config": config}
+
+@app.put("/datasets/{archivo_id}/dashboard/{vista_id}")
+def guardar_vista(archivo_id: int, vista_id: int, datos: VistaIn, u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        a = _archivo_propio(conn, archivo_id, u)
+        esquema = _esquema_dataset(a)
+        v = _vista_de(conn, a, vista_id)
+        nombre, config = v["nombre"], None
+        if datos.nombre is not None:
+            nombre = _nombre_vista(datos.nombre)
+            if any(x["nombre"].lower() == nombre.lower() and x["id"] != vista_id for x in _lista_vistas(conn, a)):
+                raise HTTPException(status_code=409, detail="Ya hay una vista con ese nombre")
+        if datos.config is not None:
+            config = _config_limpia(datos.config, esquema)
+        conn.execute("UPDATE dashboards SET nombre=?, config_json=?, actualizado_en=CURRENT_TIMESTAMP WHERE id=?",
+                     (nombre, json.dumps(config) if config is not None else v["config_json"], vista_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": vista_id, "nombre": nombre, **({"config": config} if config is not None else {})}
+
+@app.delete("/datasets/{archivo_id}/dashboard/{vista_id}")
+def borrar_vista(archivo_id: int, vista_id: int, u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        a = _archivo_propio(conn, archivo_id, u)
+        _vista_de(conn, a, vista_id)
+        conn.execute("DELETE FROM dashboards WHERE id=?", (vista_id,)); conn.commit()
+    finally:
+        conn.close()
+    return {"mensaje": "Vista eliminada"}
+
 @app.get("/plantillas")
 def listar_plantillas(u=Depends(get_usuario_actual)):
     conn = get_db()

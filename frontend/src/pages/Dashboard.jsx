@@ -125,8 +125,11 @@ export default function Dashboard() {
                       {` · ${new Date(a.subido_en).toLocaleDateString('es-MX')}`}
                     </p>
                   </div>
-                  <button onClick={() => navigate(`/datos/${a.id}`)}
+                  <button onClick={() => navigate(`/datos/${a.id}/dashboard`)}
                     className="btn-ghost text-brand-600 hover:text-brand-700 hover:bg-brand-50 text-xs flex-shrink-0">
+                    Dashboard
+                  </button>
+                  <button onClick={() => navigate(`/datos/${a.id}`)} className="btn-ghost text-gray-500 text-xs flex-shrink-0">
                     Ver datos
                   </button>
                 </div>
@@ -153,7 +156,7 @@ export default function Dashboard() {
         <div className="card bg-gray-50 border-dashed">
           <h2 className="text-sm font-semibold text-gray-700">Dashboards a tu medida</h2>
           <p className="text-xs text-gray-500 mt-1">
-            Próximamente podrás armar tu propio dashboard con gráficas sobre estos datos y exportarlo.
+            Abre el «Dashboard» de cualquier archivo: te proponemos gráficas según sus columnas y las ajustas en «Modo edición». Exportar a imagen, PDF y PowerPoint llegará después.
           </p>
         </div>
       </main>

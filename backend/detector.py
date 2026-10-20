@@ -288,13 +288,25 @@ def _a_fecha(serie: pd.Series) -> pd.Series:
         return pd.to_datetime("1899-12-30") + pd.to_timedelta(nums, unit="D")
     texto = serie.map(lambda v: np.nan if _vacio(v) else str(v).strip())
     df_first = _dayfirst(list(texto.dropna().head(500)))
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        try:
-            out = pd.to_datetime(texto, errors="coerce", dayfirst=df_first, format="mixed")
-        except (TypeError, ValueError):
-            out = pd.to_datetime(texto, errors="coerce", dayfirst=df_first)
-    return out
+
+    def convertir(t, dayfirst):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                return pd.to_datetime(t, errors="coerce", dayfirst=dayfirst, format="mixed")
+            except (TypeError, ValueError):
+                return pd.to_datetime(t, errors="coerce", dayfirst=dayfirst)
+
+    # aaaa-mm-dd (ISO, año primero) es siempre año-mes-día: dayfirst NO debe aplicarse (invertiría 2026-04-12)
+    iso = texto.str.match(r"^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}", na=False)
+    if iso.all():
+        return convertir(texto, False)
+    if iso.any():
+        out = pd.Series(pd.NaT, index=texto.index, dtype="datetime64[ns]")
+        out[iso] = convertir(texto[iso], False)
+        out[~iso] = convertir(texto[~iso], df_first)
+        return out
+    return convertir(texto, df_first)
 
 
 def _proporcion_fechas(serie: pd.Series) -> float:
