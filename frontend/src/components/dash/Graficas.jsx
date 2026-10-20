@@ -50,7 +50,12 @@ export function Kpi({ widget, datos }) {
         <p className="text-xs mt-1 flex items-center gap-1" style={{ color: TINTA.secundaria }}>
           <span aria-hidden="true">{sube ? '▲' : baja ? '▼' : '■'}</span>
           <span className="font-medium">{sube ? '+' : ''}{fmtNum(d.pct)} %</span>
-          <span>vs {etiquetaPeriodo(d.anterior, widget.grano === 'auto' ? 'mes' : widget.grano)}</span>
+          <span>vs {etiquetaPeriodo(d.anterior, d.grano || (widget.grano === 'auto' ? 'mes' : widget.grano))}</span>
+        </p>
+      )}
+      {d?.excluido && (
+        <p className="text-xs mt-0.5" style={{ color: TINTA.suave || TINTA.secundaria }}>
+          Sin contar {etiquetaPeriodo(d.excluido, d.grano)} (periodo en curso)
         </p>
       )}
     </div>

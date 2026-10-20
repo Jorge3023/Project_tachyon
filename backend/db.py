@@ -1,7 +1,7 @@
 """
 Acceso a la base de datos con dos motores y el mismo código de la aplicación:
 
-  - SQLite (por defecto, solo desarrollo local): archivo `produccion.db` en el directorio actual.
+  - SQLite (por defecto, solo desarrollo local): archivo `tachyon.db` en el directorio actual.
   - PostgreSQL (producción, p. ej. Supabase): se activa definiendo la variable DATABASE_URL.
 
 La aplicación escribe SQL con marcadores `?` y accede a las filas por nombre o por índice;
@@ -14,7 +14,7 @@ import warnings
 
 DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
 ES_POSTGRES = bool(DATABASE_URL)
-SQLITE_PATH = os.getenv("SQLITE_PATH", "produccion.db")
+SQLITE_PATH = os.getenv("SQLITE_PATH", "tachyon.db")
 
 # Tablas de la aplicación (se usa para activar la seguridad por filas en Postgres)
 TABLAS = ("usuarios", "archivos", "comparticiones", "plantillas", "proyectos", "dashboards")

@@ -88,14 +88,14 @@ http://localhost:5173
 ## 📁 Estructura del proyecto
 
 ```text
-produccion-app/
+project_tachyon/
 │
 ├── backend/
 │   ├── main.py
 │   ├── db.py
 │   ├── storage.py
 │   ├── requirements.txt
-│   └── produccion.db (solo en desarrollo; se genera automáticamente)
+│   └── tachyon.db (solo en desarrollo; se genera automáticamente)
 │
 ├── frontend/
 │   ├── src/
@@ -143,11 +143,11 @@ Proyecto de análisis de datos de propósito general (Excel/CSV).
 
 ![Login](images/login.png)
 
-## Dashboard Principal
+## Dashboard editable (propuesta automática)
 
 ![Dashboard](images/dashboard.png)
 
-## Módulo de Carga de Excel
+## Mis archivos y proyectos
 
 ![Archivos](images/archivos.png)
 
