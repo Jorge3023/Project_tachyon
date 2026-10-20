@@ -35,4 +35,5 @@ def require_admin(usuario=Depends(get_usuario_actual)):
 def usuario_publico(u):
     """Datos del usuario que ve el frontend. 'nombre' = username si ya lo eligió."""
     return {"id": u["id"], "nombre": u["username"] or u["nombre"], "username": u["username"],
-            "correo": u["correo"], "rol": u["rol"], "necesita_username": not u["username"]}
+            "correo": u["correo"], "rol": u["rol"], "necesita_username": not u["username"],
+            "avatar_v": u["avatar_v"] or 0}
