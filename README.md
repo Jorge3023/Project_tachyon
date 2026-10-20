@@ -120,7 +120,7 @@ project_tachyon/
 - [x] Detección automática de columnas en cualquier Excel/CSV.
 - [x] Plantillas, privacidad por usuario y compartir por correo.
 - [x] Editor de dashboards con gráficas propuestas según el tipo de columnas.
-- [ ] Pantalla de exportación (imagen, PDF, PowerPoint, CSV/Excel).
+- [x] Pantalla de exportación (imagen, PDF, PowerPoint, CSV/Excel).
 - [ ] Clasificadores y análisis asistido.
 
 ---
@@ -209,6 +209,15 @@ El navegador nunca recibe las filas ni manda fórmulas: manda una *configuració
 **Mapa geográfico:** puntos sobre un mapa real (Leaflet + OpenStreetMap) a partir de una columna de latitud (±90) y otra de longitud (±180). El tamaño del punto puede ser el número de filas o una métrica (suma, promedio…) y el color puede ir por categoría. Si hay más de 800 ubicaciones distintas, el servidor agrupa las cercanas en una cuadrícula (el navegador nunca recibe más de 800 puntos) y avisa cuántas filas hay en cuántos puntos; las coordenadas imposibles se descartan y se avisa. La rueda del mouse solo acerca el mapa después de hacer clic en él, y en el móvil un dedo desplaza la página (dos dedos mueven el mapa). Leaflet solo se descarga cuando el dashboard tiene un mapa. Todavía no convierte nombres de ciudades en coordenadas (no hay geocodificación): hacen falta las columnas de latitud y longitud.
 
 **Dashboard principal:** con **☆ Hacer principal** cualquier usuario elige el dashboard (una vista guardada, o la propuesta de un archivo, también si se lo compartieron) que se abre al entrar; es una preferencia personal. Mientras haya uno, el resumen de archivos queda en **Resumen** en el menú. Endpoints: `GET|PUT|DELETE /me/dashboard-principal`; si el archivo se borra o se deja de compartir, el principal se limpia solo.
+
+**Exportar:** el botón **Exportar** del dashboard abre una pantalla aparte (`/datos/:id/exportar`) con vista previa. Lo puede usar cualquiera que vea el archivo, también quien lo recibió compartido. Lleva los cambios sin guardar del editor y tiene sus propios filtros, que solo afectan a la exportación.
+- **Imagen (PNG)**: una sola imagen con título, filtros y fecha, o una por gráfica en un ZIP.
+- **PDF**: Carta o A4, horizontal o vertical; las gráficas se acomodan por filas sin partir ninguna entre páginas, con encabezado y «Página n de N».
+- **PowerPoint**: portada, y varias gráficas por diapositiva o una por diapositiva. Cada diapositiva lleva el nombre del archivo como texto editable.
+- **Excel**: hoja «Resumen» (archivo, vista, filtros), hoja «Datos» con las filas filtradas y una hoja con los números de cada gráfica. Hasta 50 000 filas.
+- **CSV**: las filas filtradas, UTF-8 con marca (Excel muestra bien los acentos). Hasta 500 000 filas.
+
+Imagen, PDF y PowerPoint se arman en el navegador fotografiando las mismas gráficas que se ven en pantalla (`html-to-image`, `jspdf`, `pptxgenjs`, `jszip`; se descargan solo al exportar). Excel y CSV los genera el servidor: `POST /datasets/{id}/exportar` con `{config, formato: "csv"|"xlsx", datos, graficas, widgets, vista}`. Los textos que empiezan con `=`, `+`, `-` o `@` se guardan como texto para que Excel no los ejecute como fórmulas. En el mapa exportado se conserva la atribución de OpenStreetMap, como exige su licencia; si los mosaicos no cargan, el mapa sale sin fondo y se avisa. En móviles se limita la nitidez para no agotar la memoria.
 
 ## Configurar Supabase (producción)
 

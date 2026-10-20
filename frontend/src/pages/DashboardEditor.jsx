@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { useParams, Link, useNavigate } from 'react-router-dom'
+import { useParams, Link, useNavigate, useLocation } from 'react-router-dom'
 import api from '../services/api'
 import { usePrincipal } from '../context/PrincipalContext'
 import { Grafica, TablaAlternativa, vacio } from '../components/dash/Graficas'
 import PanelConfig from '../components/dash/PanelConfig'
 import AgregarGrafica from '../components/dash/AgregarGrafica'
 import ListaFiltros from '../components/dash/Filtros'
+import Notas from '../components/dash/Notas'
 import useTablero from '../lib/useTablero'
 import { CLASE_ANCHO, GRANOS, TIPOS, widgetNuevo, actualizarWidget, subtituloWidget, fmtNum, nuevoId } from '../lib/dash'
 
@@ -71,16 +72,7 @@ function Tarjeta({ widget, datos, cargando, editando, seleccionada, levantada, r
           : verTabla ? <TablaAlternativa widget={widget} datos={datos} />
           : <div className={cargando ? 'opacity-60 transition-opacity' : 'transition-opacity'}><Grafica widget={widget} datos={datos} /></div>}
       </div>
-      {datos && !datos.error && datos.advertencia && <p className="text-[11px] text-gray-400 mt-2">{datos.advertencia}</p>}
-      {widget.tipo === 'dispersion' && datos && !datos.error && datos.total > 0 && (
-        <p className="text-[11px] text-gray-400 mt-2">
-          {datos.correlacion !== null && <>Correlación r = {fmtNum(datos.correlacion)} · </>}
-          {datos.muestra < datos.total ? `muestra de ${fmtNum(datos.muestra)} de ${fmtNum(datos.total)} puntos` : `${fmtNum(datos.total)} puntos`}
-        </p>
-      )}
-      {datos && !datos.error && widget.tipo === 'histograma' && datos.media !== undefined && (
-        <p className="text-[11px] text-gray-400 mt-2">Media {fmtNum(datos.media)} · Mediana {fmtNum(datos.mediana)} · {fmtNum(datos.n)} filas</p>
-      )}
+      <Notas widget={widget} datos={datos} />
     </section>
   )
 }
@@ -90,6 +82,9 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
   const id = archivoId ?? idRuta
   const { principal, fijar, quitar } = usePrincipal()
   const navigate = useNavigate()
+  const location = useLocation()
+  // Al volver de «Exportar» llegan los cambios sin guardar que se tenían (se usan una sola vez)
+  const pendiente = useRef(location.state?.configPendiente ? location.state : null)
   const [info, setInfo] = useState(null)             // respuesta de GET /dashboard
   const [error, setError] = useState('')
   const [config, setConfig] = useState(null)         // lo que se ve (guardado + cambios sin guardar)
@@ -112,11 +107,14 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
     setError('')
     try {
       const r = await api.get(`/datasets/${id}/dashboard`, { params: vista ? { vista } : {} })
-      setInfo(r.data); setConfig(r.data.config); base.current = JSON.stringify(r.data.config)
+      const p = pendiente.current
+      pendiente.current = null
+      const retomar = p && (p.vista ?? null) === (r.data.vista.guardada ? r.data.vista.id : null)
+      setInfo(r.data); setConfig(retomar ? p.configPendiente : r.data.config); base.current = JSON.stringify(r.data.config)
       setResultado(null); setSel(null)
     } catch (e) { setError(msg(e, 'No se pudo abrir el dashboard')) }
   }, [id])
-  useEffect(() => { setInfo(null); setEditando(false); cargar(vistaInicial ?? undefined) }, [cargar, vistaInicial])
+  useEffect(() => { setInfo(null); setEditando(false); cargar(vistaInicial ?? pendiente.current?.vista ?? undefined) }, [cargar, vistaInicial])
 
   const sucio = !!config && JSON.stringify(config) !== base.current
   const esMio = info?.archivo.es_mio
@@ -313,6 +311,11 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
                   {editando ? 'Terminar edición' : 'Modo edición'}
                 </button>
               )}
+              <button type="button" className="btn-ghost text-xs border border-gray-200 whitespace-nowrap" title="Descargar como imagen, PDF, PowerPoint, Excel o CSV"
+                onClick={() => navigate(`/datos/${id}/exportar${vistaActual ? `?vista=${vistaActual}` : ''}`, { state: { config, vista: vistaActual } })}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" /></svg>
+                Exportar
+              </button>
               <Link to={`/datos/${id}`} className="btn-ghost text-xs">Ver datos</Link>
             </div>
           </div>
