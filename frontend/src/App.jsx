@@ -12,6 +12,7 @@ import VerDatos from './pages/VerDatos'
 import Proyecto from './pages/Proyecto'
 // El editor trae las librerías de gráficas: se carga solo cuando se abre un dashboard
 const DashboardEditor = lazy(() => import('./pages/DashboardEditor'))
+const Exportar = lazy(() => import('./pages/Exportar'))
 import { ProyectosProvider } from './context/ProyectosContext'
 import { PrincipalProvider } from './context/PrincipalContext'
 
@@ -61,6 +62,15 @@ function AppRoutes() {
           <AppLayout>
             <Suspense fallback={<div className="flex-1 flex items-center justify-center"><div className="w-6 h-6 border-2 border-brand-600 border-t-transparent rounded-full animate-spin" /></div>}>
               <DashboardEditor />
+            </Suspense>
+          </AppLayout>
+        </PrivateRoute>
+      } />
+      <Route path="/datos/:id/exportar" element={
+        <PrivateRoute>
+          <AppLayout>
+            <Suspense fallback={<div className="flex-1 flex items-center justify-center"><div className="w-6 h-6 border-2 border-brand-600 border-t-transparent rounded-full animate-spin" /></div>}>
+              <Exportar />
             </Suspense>
           </AppLayout>
         </PrivateRoute>
