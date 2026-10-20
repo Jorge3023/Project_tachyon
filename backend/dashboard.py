@@ -365,19 +365,41 @@ def _top_con_otros(claves, n, otros="Otros"):
     return claves.where(claves.isin(mantener) | claves.isna(), otros), True
 
 
+_FREC_PERIODO = {"semana": "W-SUN", "mes": "M", "trimestre": "Q", "anio": "Y"}
+
+
+def _periodo_incompleto(s, grano):
+    """True si la última fecha de los datos cae antes del final de su periodo (periodo en curso)."""
+    f = _FREC_PERIODO.get(grano)
+    v = s.dropna()
+    if f is None or v.empty:
+        return False
+    ultimo = v.max()
+    return ultimo.normalize() < pd.Period(ultimo, freq=f).end_time.normalize()
+
+
 def _calc_kpi(df, w, roles, gg):
     valor = _valor_total(df, w["medida"], w["agg"])
     delta = None
     if w.get("x") and len(df):
-        clave, completas, _ = _clave(df, w["x"], roles, gg, w["grano"])
+        clave, completas, grano = _clave(df, w["x"], roles, gg, w["grano"])
         ser = _agregar(df, [clave], w["medida"], w["agg"])
         if completas:
             ser = ser.reindex(completas)
-        ser = ser.dropna() if w["agg"] not in ("suma", "conteo", "unicos") else ser.fillna(0)
+        acumula = w["agg"] in ("suma", "conteo", "unicos")
+        ser = ser.fillna(0) if acumula else ser.dropna()
+        # Si el último periodo aún no termina (p. ej. el mes en curso), una suma/conteo parcial
+        # saldría siempre "a la baja": se compara el último periodo COMPLETO contra el anterior.
+        parcial = None
+        if acumula and grano and len(ser) >= 3 and _periodo_incompleto(df[w["x"]], grano):
+            parcial = str(ser.index[-1])
+            ser = ser.iloc[:-1]
         if len(ser) >= 2:
             act, ant = float(ser.iloc[-1]), float(ser.iloc[-2])
             delta = {"pct": _n((act - ant) / abs(ant) * 100, 2) if ant else None,
-                     "actual": str(ser.index[-1]), "anterior": str(ser.index[-2])}
+                     "actual": str(ser.index[-1]), "anterior": str(ser.index[-2]), "grano": grano}
+            if parcial:
+                delta["excluido"] = parcial
     return {"valor": _n(valor), "delta": delta}
 
 
