@@ -1,6 +1,6 @@
 import { lazy, Suspense } from 'react'
-import { usePrincipal } from '../context/PrincipalContext'
-import Resumen from './Dashboard'
+import { usePrincipal } from '@/features/dashboard/PrincipalContext'
+import Resumen from './Resumen'
 
 const DashboardEditor = lazy(() => import('./DashboardEditor'))
 const Cargando = () => (

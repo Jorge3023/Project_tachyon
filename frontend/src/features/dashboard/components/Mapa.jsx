@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { TINTA, PALETA, COLOR_OTROS, fmtNum, fmtCompacto } from '../../lib/dash'
+import { TINTA, PALETA, COLOR_OTROS, fmtNum, fmtCompacto } from '@/features/dashboard/lib/dash'
 
 // Mosaicos del mapa. Por defecto OpenStreetMap (gratis, con atribución). Para mucho tráfico conviene un proveedor
 // propio: se cambia con VITE_TILES_URL (p. ej. MapTiler, Stadia, Mapbox) sin tocar el código.

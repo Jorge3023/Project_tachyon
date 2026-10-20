@@ -1,97 +1,56 @@
 import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { AuthProvider, useAuth } from './context/AuthContext'
-import AppLayout from './components/AppLayout'
-import Login from './pages/Login'
-import Inicio from './pages/Inicio'
-import Resumen from './pages/Dashboard'
-import Archivos from './pages/Archivos'
-import ElegirUsername from './pages/ElegirUsername'
-import Usuarios from './pages/Usuarios'
-import VerDatos from './pages/VerDatos'
-import Proyecto from './pages/Proyecto'
-// El editor trae las librerías de gráficas: se carga solo cuando se abre un dashboard
-const DashboardEditor = lazy(() => import('./pages/DashboardEditor'))
-const Exportar = lazy(() => import('./pages/Exportar'))
-import { ProyectosProvider } from './context/ProyectosContext'
-import { PrincipalProvider } from './context/PrincipalContext'
+import { AuthProvider, useAuth } from '@/features/auth/AuthContext'
+import { ProyectosProvider } from '@/features/proyectos/ProyectosContext'
+import { PrincipalProvider } from '@/features/dashboard/PrincipalContext'
+import AppLayout from '@/shared/components/AppLayout'
+import Cargando from '@/shared/components/Cargando'
+import Login from '@/features/auth/pages/Login'
+import ElegirUsername from '@/features/auth/pages/ElegirUsername'
+import Inicio from '@/features/dashboard/pages/Inicio'
+import Resumen from '@/features/dashboard/pages/Resumen'
+import Archivos from '@/features/archivos/pages/Archivos'
+import VerDatos from '@/features/archivos/pages/VerDatos'
+import Proyecto from '@/features/proyectos/pages/Proyecto'
+import Usuarios from '@/features/usuarios/pages/Usuarios'
 
-function PrivateRoute({ children }) {
+// El editor y la exportación traen las librerías de gráficas, mapa, PDF y PowerPoint:
+// se descargan solo cuando se abre esa pantalla.
+const DashboardEditor = lazy(() => import('@/features/dashboard/pages/DashboardEditor'))
+const Exportar = lazy(() => import('@/features/exportar/pages/Exportar'))
+
+/** Pantalla que exige sesión (y, si se pide, ser administrador) y se muestra dentro del menú lateral. */
+function Privada({ children, admin = false }) {
   const { usuario, cargando } = useAuth()
-  if (cargando) return (
-    <div className="min-h-screen flex items-center justify-center">
-      <div className="w-6 h-6 border-2 border-brand-600 border-t-transparent rounded-full animate-spin" />
-    </div>
-  )
+  if (cargando) return <Cargando pantalla />
   if (!usuario) return <Navigate to="/" replace />
   // Primer ingreso: antes de ver nada, debe elegir su nombre de usuario
   if (usuario.necesita_username) return <ElegirUsername />
-  return children
+  if (admin && usuario.rol !== 'admin') return <Navigate to="/dashboard" replace />
+  return (
+    <AppLayout>
+      <Suspense fallback={<Cargando />}>{children}</Suspense>
+    </AppLayout>
+  )
 }
 
-function AdminRoute({ children }) {
-  const { usuario } = useAuth()
-  return usuario?.rol === 'admin' ? children : <Navigate to="/dashboard" replace />
-}
-
-function AppRoutes() {
+function Rutas() {
   const { usuario } = useAuth()
   return (
     <Routes>
-      {/* Ruta Principal: Si está logueado va a Dashboard, si no, muestra Login */}
+      {/* Con sesión se va al inicio; sin sesión se muestra el login */}
       <Route path="/" element={usuario ? <Navigate to="/dashboard" replace /> : <Login />} />
 
-      {/* Rutas Protegidas */}
-      <Route path="/dashboard" element={
-        <PrivateRoute>
-          <AppLayout><Inicio /></AppLayout>
-        </PrivateRoute>
-      } />
-      <Route path="/resumen" element={
-        <PrivateRoute>
-          <AppLayout><Resumen /></AppLayout>
-        </PrivateRoute>
-      } />
-      <Route path="/archivos" element={
-        <PrivateRoute>
-          <AppLayout><Archivos /></AppLayout>
-        </PrivateRoute>
-      } />
-      <Route path="/datos/:id/dashboard" element={
-        <PrivateRoute>
-          <AppLayout>
-            <Suspense fallback={<div className="flex-1 flex items-center justify-center"><div className="w-6 h-6 border-2 border-brand-600 border-t-transparent rounded-full animate-spin" /></div>}>
-              <DashboardEditor />
-            </Suspense>
-          </AppLayout>
-        </PrivateRoute>
-      } />
-      <Route path="/datos/:id/exportar" element={
-        <PrivateRoute>
-          <AppLayout>
-            <Suspense fallback={<div className="flex-1 flex items-center justify-center"><div className="w-6 h-6 border-2 border-brand-600 border-t-transparent rounded-full animate-spin" /></div>}>
-              <Exportar />
-            </Suspense>
-          </AppLayout>
-        </PrivateRoute>
-      } />
-      <Route path="/datos/:id" element={
-        <PrivateRoute>
-          <AppLayout><VerDatos /></AppLayout>
-        </PrivateRoute>
-      } />
-      <Route path="/proyecto/:id" element={
-        <PrivateRoute>
-          <AppLayout><Proyecto /></AppLayout>
-        </PrivateRoute>
-      } />
-      <Route path="/usuarios" element={
-        <PrivateRoute>
-          <AdminRoute><AppLayout><Usuarios /></AppLayout></AdminRoute>
-        </PrivateRoute>
-      } />
+      <Route path="/dashboard" element={<Privada><Inicio /></Privada>} />
+      <Route path="/resumen" element={<Privada><Resumen /></Privada>} />
+      <Route path="/archivos" element={<Privada><Archivos /></Privada>} />
+      <Route path="/datos/:id" element={<Privada><VerDatos /></Privada>} />
+      <Route path="/datos/:id/dashboard" element={<Privada><DashboardEditor /></Privada>} />
+      <Route path="/datos/:id/exportar" element={<Privada><Exportar /></Privada>} />
+      <Route path="/proyecto/:id" element={<Privada><Proyecto /></Privada>} />
+      <Route path="/usuarios" element={<Privada admin><Usuarios /></Privada>} />
 
-      {/* Comodín: Cualquier otra ruta no definida redirige al inicio */}
+      {/* Cualquier otra ruta vuelve al inicio */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
@@ -103,7 +62,7 @@ export default function App() {
       <AuthProvider>
         <ProyectosProvider>
           <PrincipalProvider>
-            <AppRoutes />
+            <Rutas />
           </PrincipalProvider>
         </ProyectosProvider>
       </AuthProvider>

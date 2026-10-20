@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
-import { useAuth } from '../context/AuthContext'
-import { useProyectos } from '../context/ProyectosContext'
-import { usePrincipal } from '../context/PrincipalContext'
-import api from '../services/api'
+import { useAuth } from '@/features/auth/AuthContext'
+import { useProyectos } from '@/features/proyectos/ProyectosContext'
+import { usePrincipal } from '@/features/dashboard/PrincipalContext'
+import api from '@/shared/api'
 
 const navItems = [
   {

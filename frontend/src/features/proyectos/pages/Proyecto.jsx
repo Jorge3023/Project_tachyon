@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import api from '../services/api'
-import SubirArchivo from '../components/SubirArchivo'
-import { useProyectos } from '../context/ProyectosContext'
+import api from '@/shared/api'
+import SubirArchivo from '@/features/archivos/components/SubirArchivo'
+import { useProyectos } from '@/features/proyectos/ProyectosContext'
 
 export default function Proyecto() {
   const { id } = useParams()

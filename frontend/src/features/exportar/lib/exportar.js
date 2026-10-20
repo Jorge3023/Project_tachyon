@@ -2,7 +2,7 @@
    · PNG, PDF y PowerPoint se arman en el navegador fotografiando las mismas gráficas que se ven en pantalla
      (así lo exportado es idéntico a lo que se ve, incluido el mapa). Las librerías se cargan solo al exportar.
    · CSV y Excel los genera el servidor (POST /datasets/{id}/exportar) porque necesitan todas las filas. */
-import api from '../services/api'
+import api from '@/shared/api'
 
 export const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 const frame = () => new Promise(r => requestAnimationFrame(() => r()))

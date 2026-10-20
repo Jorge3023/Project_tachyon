@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import api from '../../services/api'
-import { ROL_TEXTO } from '../../lib/dash'
+import api from '@/shared/api'
+import { ROL_TEXTO } from '@/features/dashboard/lib/dash'
 
 const _cache = new Map()
 /** Valores posibles de una columna (para armar el filtro). Se piden una sola vez por archivo y columna. */

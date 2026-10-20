@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
-import api from '../services/api'
+import api from '@/shared/api'
 import { useNavigate } from 'react-router-dom'
-import ModalCompartir from '../components/ModalCompartir'
-import SubirArchivo from '../components/SubirArchivo'
-import { useProyectos } from '../context/ProyectosContext'
+import ModalCompartir from '@/features/archivos/components/ModalCompartir'
+import SubirArchivo from '@/features/archivos/components/SubirArchivo'
+import { useProyectos } from '@/features/proyectos/ProyectosContext'
 
 function EstadoBadge({ estado }) {
   const map = {

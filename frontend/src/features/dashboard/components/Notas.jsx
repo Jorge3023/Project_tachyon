@@ -1,4 +1,4 @@
-import { fmtNum } from '../../lib/dash'
+import { fmtNum } from '@/features/dashboard/lib/dash'
 
 /** Líneas pequeñas bajo una gráfica (aviso del servidor, correlación, media…). Las usan el editor y la exportación. */
 export default function Notas({ widget, datos }) {

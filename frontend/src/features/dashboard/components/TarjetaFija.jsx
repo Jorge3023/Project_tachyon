@@ -1,6 +1,6 @@
 import { Grafica, vacio } from './Graficas'
 import Notas from './Notas'
-import { TIPOS, TINTA, subtituloWidget } from '../../lib/dash'
+import { TIPOS, TINTA, subtituloWidget } from '@/features/dashboard/lib/dash'
 
 /** Tarjeta de una gráfica sin controles de edición: es lo que se fotografía al exportar. */
 export default function TarjetaFija({ widget, datos }) {

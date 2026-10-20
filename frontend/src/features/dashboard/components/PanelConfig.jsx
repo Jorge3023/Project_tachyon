@@ -1,7 +1,7 @@
 import {
   TIPOS, ORDEN_TIPOS, ANCHOS, GRANOS, AGGS, PALETA, ROL_TEXTO, aggsPermitidas, motivoNoDisponible, cambiarTipo,
   candidatasLat, candidatasLon,
-} from '../../lib/dash'
+} from '@/features/dashboard/lib/dash'
 import ListaFiltros from './Filtros'
 
 const sel = 'w-full text-sm border border-gray-200 rounded-lg px-2.5 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/30'

@@ -5,7 +5,7 @@ import {
 } from 'recharts'
 import {
   TINTA, PALETA, colorSerie, colorRampa, tintaSobre, fmtNum, fmtCompacto, etiquetaPeriodo, etiquetaLarga,
-} from '../../lib/dash'
+} from '@/features/dashboard/lib/dash'
 
 const ALTO = 240
 // Leaflet (el mapa) solo se descarga cuando hay un mapa en el dashboard

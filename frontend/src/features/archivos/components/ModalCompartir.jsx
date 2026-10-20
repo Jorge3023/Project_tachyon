@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import api from '../services/api'
+import api from '@/shared/api'
 
 // Compartir un archivo (solo lectura) con otras personas, por correo electrónico.
 export default function ModalCompartir({ archivo, onCerrar, onCambio }) {

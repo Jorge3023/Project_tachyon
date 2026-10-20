@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useParams, Link, useNavigate, useLocation } from 'react-router-dom'
-import api from '../services/api'
-import { usePrincipal } from '../context/PrincipalContext'
-import { Grafica, TablaAlternativa, vacio } from '../components/dash/Graficas'
-import PanelConfig from '../components/dash/PanelConfig'
-import AgregarGrafica from '../components/dash/AgregarGrafica'
-import ListaFiltros from '../components/dash/Filtros'
-import Notas from '../components/dash/Notas'
-import useTablero from '../lib/useTablero'
-import { CLASE_ANCHO, GRANOS, TIPOS, widgetNuevo, actualizarWidget, subtituloWidget, fmtNum, nuevoId } from '../lib/dash'
+import api from '@/shared/api'
+import { usePrincipal } from '@/features/dashboard/PrincipalContext'
+import { Grafica, TablaAlternativa, vacio } from '@/features/dashboard/components/Graficas'
+import PanelConfig from '@/features/dashboard/components/PanelConfig'
+import AgregarGrafica from '@/features/dashboard/components/AgregarGrafica'
+import ListaFiltros from '@/features/dashboard/components/Filtros'
+import Notas from '@/features/dashboard/components/Notas'
+import useTablero from '@/features/dashboard/lib/useTablero'
+import { CLASE_ANCHO, GRANOS, TIPOS, widgetNuevo, actualizarWidget, subtituloWidget, fmtNum, nuevoId } from '@/features/dashboard/lib/dash'
 
 const tieneTablaAlt = (t) => ['linea', 'area', 'barras', 'dona', 'pareto', 'histograma', 'calor', 'mapa'].includes(t)
 const msg = (e, def) => (typeof e?.response?.data?.detail === 'string' ? e.response.data.detail : def)

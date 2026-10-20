@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useAuth } from '../context/AuthContext'
-import api from '../services/api'
-import { useProyectos } from '../context/ProyectosContext'
+import { useAuth } from '@/features/auth/AuthContext'
+import api from '@/shared/api'
+import { useProyectos } from '@/features/proyectos/ProyectosContext'
 
 function MetricCard({ label, value, sub, color = 'gray', icon }) {
   const colors = {
@@ -42,7 +42,7 @@ const iconoCompartir = (
   </svg>
 )
 
-export default function Dashboard() {
+export default function Resumen() {
   const { usuario } = useAuth()
   const navigate = useNavigate()
   const { proyectos } = useProyectos()

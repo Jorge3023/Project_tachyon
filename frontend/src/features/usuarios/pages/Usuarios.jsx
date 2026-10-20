@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
-import api from '../services/api'
-import { useAuth } from '../context/AuthContext'
-import EstadoSistema from '../components/EstadoSistema'
+import api from '@/shared/api'
+import { useAuth } from '@/features/auth/AuthContext'
+import EstadoSistema from '@/features/usuarios/components/EstadoSistema'
 
 // Solo administradores: crear cuentas (correo + contraseña temporal) y activar/desactivar.
 export default function Usuarios() {
