@@ -10,7 +10,6 @@ este módulo adapta esas consultas a PostgreSQL.
 import os
 import re
 import sqlite3
-import warnings
 
 DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
 ES_POSTGRES = bool(DATABASE_URL)
