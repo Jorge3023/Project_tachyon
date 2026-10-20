@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useProyectos } from '../context/ProyectosContext'
+import { usePrincipal } from '../context/PrincipalContext'
 import api from '../services/api'
 
 const navItems = [
@@ -21,6 +22,7 @@ export default function Sidebar() {
   const { usuario, logout } = useAuth()
   const navigate = useNavigate()
   const { proyectos, recargar } = useProyectos()
+  const { principal } = usePrincipal()
   const [creando, setCreando] = useState(false)
   const [nuevo,   setNuevo]   = useState('')
   const [errorPr, setErrorPr] = useState('')
@@ -68,6 +70,7 @@ export default function Sidebar() {
           <NavLink
             key={item.to}
             to={item.to}
+            end
             className={({ isActive }) =>
               `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors duration-100 ` +
               (isActive
@@ -80,6 +83,17 @@ export default function Sidebar() {
           </NavLink>
         ))}
 
+        {principal && (
+          <NavLink to="/resumen"
+            className={({ isActive }) =>
+              `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors duration-100 ` +
+              (isActive ? 'bg-brand-50 text-brand-700 font-medium' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50')}>
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h10M4 18h16" />
+            </svg>
+            Resumen
+          </NavLink>
+        )}
         <NavLink
           to="/archivos"
           className={({ isActive }) =>

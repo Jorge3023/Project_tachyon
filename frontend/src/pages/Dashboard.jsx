@@ -156,7 +156,7 @@ export default function Dashboard() {
         <div className="card bg-gray-50 border-dashed">
           <h2 className="text-sm font-semibold text-gray-700">Dashboards a tu medida</h2>
           <p className="text-xs text-gray-500 mt-1">
-            Abre el «Dashboard» de cualquier archivo: te proponemos gráficas según sus columnas y las ajustas en «Modo edición». Exportar a imagen, PDF y PowerPoint llegará después.
+            Abre el «Dashboard» de cualquier archivo: te proponemos gráficas según sus columnas (incluido un mapa si hay latitud y longitud) y las ajustas en «Modo edición». Marca ☆ «Hacer principal» el que quieras ver al entrar, y con «Exportar» descárgalo como imagen, PDF, PowerPoint, Excel o CSV.
           </p>
         </div>
       </main>

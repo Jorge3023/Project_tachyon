@@ -1,13 +1,14 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from datetime import datetime, timedelta
 from typing import Optional, List
 import jwt, bcrypt, json, os, io, warnings, re, threading
 from collections import OrderedDict
 from pydantic import BaseModel
 import dashboard as dash
+import exportar
 import detector
 import db
 import storage
@@ -25,6 +26,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition", "X-Filas-Exportadas", "X-Exportacion-Truncada"],
 )
 
 @app.get("/")
@@ -75,6 +77,9 @@ def init_db():
     # Migraciones (bases creadas con versiones anteriores)
     if "username" not in db.columnas(conn, "usuarios"):
         cur.execute("ALTER TABLE usuarios ADD COLUMN username TEXT")
+    # Dashboard que cada usuario ve al entrar: {"archivo_id": n, "vista_id": n|null}
+    if "dashboard_principal" not in db.columnas(conn, "usuarios"):
+        cur.execute("ALTER TABLE usuarios ADD COLUMN dashboard_principal TEXT")
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_username "
                 "ON usuarios(lower(username)) WHERE username IS NOT NULL")
     # Archivos genéricos (cualquier Excel/CSV): tipo, esquema de columnas confirmado y huella de columnas
@@ -829,6 +834,22 @@ def _lista_vistas(conn, a):
     return [{"id": r["id"], "nombre": r["nombre"]} for r in
             conn.execute("SELECT id, nombre FROM dashboards WHERE archivo_id=? ORDER BY id", (a["id"],)).fetchall()]
 
+def _columnas_editor(a, esquema):
+    """Columnas para el editor; las numéricas llevan su rango (para ofrecer latitud/longitud solo si encajan)."""
+    try:
+        res = {r["nombre"]: r for r in json.loads(a["resumen_json"] or "[]")}
+    except ValueError:
+        res = {}
+    out = []
+    for c in esquema:
+        if c["rol"] == "ignorar":
+            continue
+        d = {"nombre": c["nombre"], "rol": c["rol"]}
+        if c["rol"] == "numero" and res.get(c["nombre"], {}).get("min") is not None:
+            d["min"], d["max"] = res[c["nombre"]]["min"], res[c["nombre"]]["max"]
+        out.append(d)
+    return out
+
 @app.get("/datasets/{archivo_id}/dashboard")
 def ver_dashboard(archivo_id: int, vista: Optional[int] = None, u=Depends(get_usuario_actual)):
     """Vista guardada (la pedida o la primera) o, si el archivo aún no tiene ninguna, la propuesta automática."""
@@ -856,7 +877,7 @@ def ver_dashboard(archivo_id: int, vista: Optional[int] = None, u=Depends(get_us
                 "vista": {"id": actual["id"] if guardada else None,
                           "nombre": actual["nombre"] if guardada else "Resumen sugerido", "guardada": guardada},
                 "config": config,
-                "columnas": [{"nombre": c["nombre"], "rol": c["rol"]} for c in esquema if c["rol"] != "ignorar"]}
+                "columnas": _columnas_editor(a, esquema)}
     finally:
         conn.close()
 
@@ -881,6 +902,80 @@ def datos_dashboard(archivo_id: int, datos: ConfigDashIn, u=Depends(get_usuario_
     out = dash.calcular(df, config, esquema)
     out["config"] = config
     return out
+
+class ExportarIn(BaseModel):
+    config: dict
+    formato: str                              # "csv" | "xlsx"
+    datos: bool = True                        # incluir las filas filtradas del archivo
+    graficas: bool = True                     # xlsx: una hoja con los números de cada gráfica
+    widgets: Optional[List[str]] = None       # ids de las gráficas a incluir (por defecto todas)
+    vista: Optional[str] = None               # nombre de la vista (solo para el nombre del archivo y el resumen)
+
+@app.post("/datasets/{archivo_id}/exportar")
+def exportar_datos(archivo_id: int, datos: ExportarIn, u=Depends(get_usuario_actual)):
+    """CSV o Excel con las filas que deja el filtro del dashboard y/o los números detrás de cada gráfica.
+    Lo puede hacer quien ve el archivo (dueño o con quien se compartió): ya puede ver esas filas en «Ver datos»."""
+    import pandas as pd
+    import pyarrow.parquet as pq
+    if datos.formato not in ("csv", "xlsx"):
+        raise HTTPException(status_code=422, detail="Formato no válido (csv o xlsx)")
+    if not datos.datos and not (datos.formato == "xlsx" and datos.graficas):
+        raise HTTPException(status_code=422, detail="Elige qué exportar")
+    conn = get_db()
+    try:
+        a = _archivo_con_acceso(conn, archivo_id, u)
+    finally:
+        conn.close()
+    esquema, parquet = _datos_dataset(a)
+    config = _config_limpia(datos.config, esquema)
+    if datos.widgets is not None:
+        quiero = set(datos.widgets)
+        config = {**config, "widgets": [w for w in config["widgets"] if w["id"] in quiero]}
+    roles = dash._roles(esquema)
+    pf = pq.ParquetFile(io.BytesIO(parquet))
+    total = pf.metadata.num_rows
+    hojas, df_datos, truncada, n_filas = [], None, False, 0
+    if datos.datos:
+        df = pf.read().to_pandas()
+        df = dash.aplicar_filtros(df, config["filtros"], roles)
+        n_filas = len(df)
+        tope = exportar.MAX_FILAS_CSV if datos.formato == "csv" else exportar.MAX_FILAS_XLSX
+        if n_filas > tope:
+            df, truncada = df.head(tope), True
+        df_datos = exportar.preparar(df, esquema)
+    if datos.formato == "xlsx" and datos.graficas and config["widgets"]:
+        usadas = dash.columnas_usadas(config)
+        base = pf.read(columns=usadas).to_pandas() if usadas else pd.DataFrame(index=range(total))
+        res = dash.calcular(base, config, esquema)
+        for w in config["widgets"]:
+            if w["tipo"] == "tabla":
+                continue
+            t = exportar.tabla_widget(w, res["widgets"].get(w["id"]))
+            if t:
+                hojas.append((w.get("titulo") or dash.ETIQUETA_TIPO[w["tipo"]], t[0], t[1]))
+        if not datos.datos:
+            n_filas = res["filas_filtradas"]
+    nombre_vista = " ".join((datos.vista or "").split())[:40]
+    ahora = datetime.now().strftime("%Y-%m-%d %H:%M")
+    if datos.formato == "csv":
+        cuerpo, tipo, ext = exportar.a_csv(df_datos), "text/csv; charset=utf-8", "csv"
+    else:
+        resumen = [("Archivo", a["nombre"]), ("Vista", nombre_vista or "Resumen sugerido"), ("Exportado", ahora),
+                   ("Filas del archivo", total), ("Filas con los filtros", n_filas)]
+        filtros = exportar.descripcion_filtros(config)
+        resumen += [("Filtros", "; ".join(filtros) if filtros else "Ninguno")]
+        if truncada:
+            resumen += [("Aviso", f"La hoja «Datos» incluye solo las primeras {exportar.MAX_FILAS_XLSX:,} filas de {n_filas:,}. Usa CSV para exportar más.")]
+        if hojas:
+            resumen += [("Gráficas incluidas", ", ".join(h[0] for h in hojas))]
+        cuerpo = exportar.a_xlsx(df_datos, hojas, resumen)
+        tipo, ext = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"
+    base_nombre = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", a["nombre"])
+    nombre = exportar.nombre_archivo(f"{base_nombre}_{nombre_vista}" if nombre_vista else base_nombre, ext)
+    return Response(content=cuerpo, media_type=tipo, headers={
+        "Content-Disposition": f'attachment; filename="{nombre}"', "Cache-Control": "no-store",
+        "X-Filas-Exportadas": str(min(n_filas, exportar.MAX_FILAS_CSV if datos.formato == "csv" else exportar.MAX_FILAS_XLSX)),
+        "X-Exportacion-Truncada": "1" if truncada else "0"})
 
 @app.get("/datasets/{archivo_id}/valores")
 def valores_columna(archivo_id: int, columna: str, u=Depends(get_usuario_actual)):
@@ -952,6 +1047,64 @@ def borrar_vista(archivo_id: int, vista_id: int, u=Depends(get_usuario_actual)):
     finally:
         conn.close()
     return {"mensaje": "Vista eliminada"}
+
+# ── Dashboard principal: el que cada usuario ve al entrar (puede ser de un archivo suyo o compartido) ────
+class PrincipalIn(BaseModel):
+    archivo_id: int
+    vista_id: Optional[int] = None
+
+def _principal_valido(conn, u):
+    """Devuelve el dashboard principal vigente del usuario o None (si ya no existe o ya no tiene acceso)."""
+    crudo = (conn.execute("SELECT dashboard_principal FROM usuarios WHERE id=?", (u["id"],)).fetchone() or {})
+    crudo = crudo["dashboard_principal"] if crudo else None
+    if not crudo:
+        return None
+    try:
+        p = json.loads(crudo)
+        a = _archivo_con_acceso(conn, int(p["archivo_id"]), u)
+    except (ValueError, KeyError, TypeError, HTTPException):
+        conn.execute("UPDATE usuarios SET dashboard_principal=NULL WHERE id=?", (u["id"],)); conn.commit()
+        return None
+    if a["estado"] != "procesado":
+        return None
+    vista = None
+    if p.get("vista_id") is not None:
+        vista = conn.execute("SELECT id, nombre FROM dashboards WHERE id=? AND archivo_id=?", (p["vista_id"], a["id"])).fetchone()
+    return {"archivo_id": a["id"], "archivo_nombre": a["nombre"], "vista_id": vista["id"] if vista else None,
+            "vista_nombre": vista["nombre"] if vista else None}
+
+@app.get("/me/dashboard-principal")
+def ver_principal(u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        return {"principal": _principal_valido(conn, u)}
+    finally:
+        conn.close()
+
+@app.put("/me/dashboard-principal")
+def fijar_principal(datos: PrincipalIn, u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        a = _archivo_con_acceso(conn, datos.archivo_id, u)
+        if a["estado"] != "procesado":
+            raise HTTPException(status_code=409, detail="El archivo aún no está procesado")
+        if datos.vista_id is not None:
+            _vista_de(conn, a, datos.vista_id)
+        conn.execute("UPDATE usuarios SET dashboard_principal=? WHERE id=?",
+                     (json.dumps({"archivo_id": a["id"], "vista_id": datos.vista_id}), u["id"]))
+        conn.commit()
+        return {"principal": _principal_valido(conn, u)}
+    finally:
+        conn.close()
+
+@app.delete("/me/dashboard-principal")
+def quitar_principal(u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        conn.execute("UPDATE usuarios SET dashboard_principal=NULL WHERE id=?", (u["id"],)); conn.commit()
+    finally:
+        conn.close()
+    return {"principal": None}
 
 @app.get("/plantillas")
 def listar_plantillas(u=Depends(get_usuario_actual)):

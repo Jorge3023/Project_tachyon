@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import {
   ResponsiveContainer, LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, PieChart, Pie, Cell, ScatterChart, Scatter, ZAxis,
@@ -7,6 +8,8 @@ import {
 } from '../../lib/dash'
 
 const ALTO = 240
+// Leaflet (el mapa) solo se descarga cuando hay un mapa en el dashboard
+const Mapa = lazy(() => import('./Mapa'))
 const EJE = { stroke: TINTA.eje, tick: { fill: TINTA.suave, fontSize: 11 }, tickLine: false }
 const corta = (s, n = 14) => (String(s).length > n ? String(s).slice(0, n - 1) + '…' : String(s))
 
@@ -328,6 +331,10 @@ export function TablaAlternativa({ widget, datos }) {
     cols = ['Desde', 'Hasta', 'Filas']; filas = datos.bins.map(b => [b.desde, b.hasta, b.n])
   } else if (widget.tipo === 'calor') {
     cols = [widget.y, ...datos.columnas]; filas = datos.filas.map((f, j) => [f, ...datos.valores[j]])
+  } else if (widget.tipo === 'mapa') {
+    const conCat = datos.series?.length > 0
+    cols = ['Latitud', 'Longitud', datos.medida ? `${datos.agg} de ${datos.medida}` : 'Filas', ...(datos.medida ? ['Filas'] : []), ...(conCat ? ['Categoría'] : [])]
+    filas = datos.puntos.slice(0, 100).map(p => [p[0], p[1], datos.medida ? p[2] : p[3], ...(datos.medida ? [p[3]] : []), ...(conCat ? [datos.series[p[4]]] : [])])
   } else return null
   return (
     <div className="overflow-auto max-h-[260px]">
@@ -352,6 +359,7 @@ export function vacio(widget, datos) {
     case 'dispersion': return !datos.puntos?.length
     case 'histograma': return !datos.bins?.length
     case 'calor': return !datos.filas?.length
+    case 'mapa': return !datos.puntos?.length
     default: return false
   }
 }
@@ -366,6 +374,7 @@ export function Grafica({ widget, datos }) {
     case 'dispersion': return <Dispersion widget={widget} datos={datos} />
     case 'histograma': return <Histograma widget={widget} datos={datos} />
     case 'calor': return <MapaCalor widget={widget} datos={datos} />
+    case 'mapa': return <Suspense fallback={<div className="animate-pulse bg-gray-100 rounded-lg" style={{ height: 340 }} />}><Mapa widget={widget} datos={datos} /></Suspense>
     case 'tabla': return <Tabla datos={datos} />
     default: return null
   }
