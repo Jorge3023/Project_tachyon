@@ -1,35 +1,48 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import api from '../services/api'
+import { usePrincipal } from '../context/PrincipalContext'
 import { Grafica, TablaAlternativa, vacio } from '../components/dash/Graficas'
 import PanelConfig from '../components/dash/PanelConfig'
 import AgregarGrafica from '../components/dash/AgregarGrafica'
 import ListaFiltros from '../components/dash/Filtros'
+import useTablero from '../lib/useTablero'
 import { CLASE_ANCHO, GRANOS, TIPOS, widgetNuevo, actualizarWidget, subtituloWidget, fmtNum, nuevoId } from '../lib/dash'
 
-const tieneTablaAlt = (t) => ['linea', 'area', 'barras', 'dona', 'pareto', 'histograma', 'calor'].includes(t)
+const tieneTablaAlt = (t) => ['linea', 'area', 'barras', 'dona', 'pareto', 'histograma', 'calor', 'mapa'].includes(t)
 const msg = (e, def) => (typeof e?.response?.data?.detail === 'string' ? e.response.data.detail : def)
 
 function Esqueleto({ alto = 200 }) {
   return <div className="animate-pulse bg-gray-100 rounded-lg" style={{ height: alto }} aria-label="Cargando gráfica" />
 }
 
-function Tarjeta({ widget, datos, cargando, editando, seleccionada, onSeleccionar, onDuplicar, onEliminar, dnd }) {
+function Tarjeta({ widget, datos, cargando, editando, seleccionada, levantada, refTarjeta, onAsa, onTecladoAsa, onSeleccionar, onDuplicar, onEliminar }) {
   const [verTabla, setVerTabla] = useState(false)
   const esKpi = widget.tipo === 'kpi'
   const sub = subtituloWidget(widget)
   return (
     <section
-      className={`card relative flex flex-col ${CLASE_ANCHO[widget.ancho] || CLASE_ANCHO[6]} col-span-12 ` +
+      ref={refTarjeta}
+      className={`card relative flex flex-col flex-1 min-w-0 ` +
         (esKpi ? 'p-4 ' : '') +
-        (editando ? 'cursor-pointer hover:border-brand-300 ' : '') +
-        (seleccionada ? 'ring-2 ring-brand-500 border-brand-500 ' : '')}
+        (editando && !levantada ? 'cursor-pointer hover:border-brand-300 ' : '') +
+        (levantada ? 'z-30 shadow-2xl ring-2 ring-brand-500 border-brand-500 cursor-grabbing select-none ' : '') +
+        (seleccionada && !levantada ? 'ring-2 ring-brand-500 border-brand-500 ' : '')}
       aria-label={widget.titulo || TIPOS[widget.tipo].l}
+      aria-grabbed={editando ? levantada : undefined}
       onClick={editando ? onSeleccionar : undefined}
-      draggable={editando} onDragStart={dnd.onDragStart} onDragOver={dnd.onDragOver} onDrop={dnd.onDrop} onDragEnd={dnd.onDragEnd}
     >
       <header className="flex items-start justify-between gap-2 mb-2">
-        <div className="min-w-0">
+        {editando && (
+          <button type="button" onPointerDown={onAsa} onKeyDown={onTecladoAsa} onClick={e => e.stopPropagation()}
+            className="-ml-1.5 mt-0.5 px-1 py-0.5 rounded text-gray-300 hover:text-gray-600 hover:bg-gray-100 cursor-grab active:cursor-grabbing touch-none flex-shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+            title="Arrastra para reordenar (o usa las flechas ↑ ↓ del teclado)" aria-label={`Reordenar «${widget.titulo || TIPOS[widget.tipo].l}»: arrastra o usa las flechas arriba y abajo`}>
+            <svg width="14" height="18" viewBox="0 0 14 18" fill="currentColor" aria-hidden="true">
+              {[3, 9, 15].map(y => <g key={y}><circle cx="3.5" cy={y} r="1.5" /><circle cx="10.5" cy={y} r="1.5" /></g>)}
+            </svg>
+          </button>
+        )}
+        <div className="min-w-0 flex-1">
           {esKpi
             ? <h3 className="text-xs text-gray-500 leading-snug" title={widget.titulo}>{widget.titulo || TIPOS[widget.tipo].l}</h3>
             : <h3 className="text-sm font-semibold text-gray-900 truncate" title={widget.titulo}>{widget.titulo || TIPOS[widget.tipo].l}</h3>}
@@ -72,8 +85,10 @@ function Tarjeta({ widget, datos, cargando, editando, seleccionada, onSelecciona
   )
 }
 
-export default function DashboardEditor() {
-  const { id } = useParams()
+export default function DashboardEditor({ archivoId, vistaInicial, esInicio = false }) {
+  const { id: idRuta } = useParams()
+  const id = archivoId ?? idRuta
+  const { principal, fijar, quitar } = usePrincipal()
   const navigate = useNavigate()
   const [info, setInfo] = useState(null)             // respuesta de GET /dashboard
   const [error, setError] = useState('')
@@ -89,7 +104,9 @@ export default function DashboardEditor() {
   const [nombre, setNombre] = useState('')
   const [guardando, setGuardando] = useState(false)
   const [aviso, setAviso] = useState('')
-  const arrastrando = useRef(null)
+  const reordenarRef = useRef(null)
+  const claveLayout = config ? config.widgets.map(w => `${w.id}:${w.ancho}`).join('|') : ''
+  const tablero = useTablero(claveLayout, (de, a) => reordenarRef.current?.(de, a))
 
   const cargar = useCallback(async (vista) => {
     setError('')
@@ -99,7 +116,7 @@ export default function DashboardEditor() {
       setResultado(null); setSel(null)
     } catch (e) { setError(msg(e, 'No se pudo abrir el dashboard')) }
   }, [id])
-  useEffect(() => { setInfo(null); setEditando(false); cargar() }, [cargar])
+  useEffect(() => { setInfo(null); setEditando(false); cargar(vistaInicial ?? undefined) }, [cargar, vistaInicial])
 
   const sucio = !!config && JSON.stringify(config) !== base.current
   const esMio = info?.archivo.es_mio
@@ -130,10 +147,21 @@ export default function DashboardEditor() {
     return () => window.removeEventListener('beforeunload', f)
   }, [sucio])
 
+  // ★ Dashboard principal: el que se abre al entrar. Es una preferencia de cada usuario (también para archivos compartidos).
+  const vistaActual = info?.vista?.guardada ? info.vista.id : null
+  const esPrincipal = !!principal && String(principal.archivo_id) === String(id) && (principal.vista_id ?? null) === vistaActual
+  const alternarPrincipal = async () => {
+    try {
+      if (esPrincipal) { await quitar(); avisar('Ya no es tu dashboard principal') }
+      else { await fijar(id, vistaActual); avisar('Listo: este dashboard se mostrará al entrar') }
+    } catch (e) { avisar(msg(e, 'No se pudo cambiar el dashboard principal')) }
+  }
+
   const confirmarSalida = () => !sucio || window.confirm('Tienes cambios sin guardar. ¿Descartarlos?')
   const avisar = (t) => { setAviso(t); setTimeout(() => setAviso(''), 3500) }
 
-  const cambiarWidgets = (fn) => setConfig(c => ({ ...c, widgets: fn(c.widgets) }))
+  // Toda alteración de la lista pasa por aquí: se mide antes para animar el cambio
+  const cambiarWidgets = (fn) => { tablero.instantanea(); setConfig(c => ({ ...c, widgets: fn(c.widgets) })) }
   const patchWidget = (wid, patch) => cambiarWidgets(ws => ws.map(w => w.id === wid ? actualizarWidget(w, patch) : w))
   const reemplazarWidget = (nuevo) => cambiarWidgets(ws => ws.map(w => w.id === nuevo.id ? nuevo : w))
   const eliminar = (wid) => { cambiarWidgets(ws => ws.filter(w => w.id !== wid)); setSel(s => s === wid ? null : s) }
@@ -192,20 +220,16 @@ export default function DashboardEditor() {
   }
   const cambiarVista = (v) => { if (!confirmarSalida()) return; cargar(v || undefined) }
 
-  const dnd = (w, i) => ({
-    onDragStart: (e) => { arrastrando.current = w.id; e.dataTransfer.effectAllowed = 'move' },
-    onDragOver: (e) => { if (arrastrando.current && arrastrando.current !== w.id) e.preventDefault() },
-    onDrop: (e) => {
-      e.preventDefault()
-      const de = arrastrando.current; arrastrando.current = null
-      if (!de || de === w.id) return
-      cambiarWidgets(ws => {
-        const from = ws.findIndex(x => x.id === de); const c = [...ws]; const [it] = c.splice(from, 1)
-        c.splice(ws.findIndex(x => x.id === w.id), 0, it); return c
-      })
-    },
-    onDragEnd: () => { arrastrando.current = null },
+  // Arrastre: la tarjeta `de` pasa a ocupar el lugar de la tarjeta `a`
+  reordenarRef.current = (de, a) => cambiarWidgets(ws => {
+    const from = ws.findIndex(x => x.id === de), to = ws.findIndex(x => x.id === a)
+    if (from < 0 || to < 0 || from === to) return ws
+    const c = [...ws]; const [it] = c.splice(from, 1); c.splice(to, 0, it); return c
   })
+  const tecladoAsa = (wid) => (e) => {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { e.preventDefault(); mover(wid, -1) }
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') { e.preventDefault(); mover(wid, 1) }
+  }
 
   const widgetSel = useMemo(() => config?.widgets.find(w => w.id === sel) || null, [config, sel])
   const tieneFechas = columnas.some(c => c.rol === 'fecha')
@@ -214,7 +238,7 @@ export default function DashboardEditor() {
     <div className="flex-1 flex items-center justify-center p-6">
       <div className="card max-w-sm text-center">
         <p className="text-sm text-gray-700">{error}</p>
-        <Link to="/archivos" className="btn-ghost justify-center mt-3 text-xs">← Mis archivos</Link>
+        <Link to={esInicio ? '/resumen' : '/archivos'} className="btn-ghost justify-center mt-3 text-xs">{esInicio ? 'Ir al resumen' : '← Mis archivos'}</Link>
       </div>
     </div>
   )
@@ -263,18 +287,24 @@ export default function DashboardEditor() {
                 </>
               )}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               {aviso && <span role="status" className="text-xs text-green-700 bg-green-50 rounded-lg px-2.5 py-1">{aviso}</span>}
               {sucio && esMio && (
                 <>
-                  <span className="text-xs text-amber-700">Cambios sin guardar</span>
+                  <span className="text-xs text-amber-700 whitespace-nowrap">Cambios sin guardar</span>
                   <button className="btn-ghost text-xs" onClick={descartar}>Descartar</button>
                   <button className="btn-primary text-xs py-1.5" onClick={guardar} disabled={guardando}>{guardando ? 'Guardando…' : 'Guardar'}</button>
                 </>
               )}
               {sucio && !esMio && <button className="btn-ghost text-xs" onClick={descartar}>Restablecer filtros</button>}
+              <button type="button" onClick={alternarPrincipal} aria-pressed={esPrincipal}
+                title={esPrincipal ? 'Es tu dashboard principal; clic para quitarlo' : 'Mostrar este dashboard al entrar'}
+                className={`text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors flex items-center gap-1.5 whitespace-nowrap ` +
+                  (esPrincipal ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-gray-200 text-gray-600 hover:bg-gray-50')}>
+                <span aria-hidden="true">{esPrincipal ? '★' : '☆'}</span>{esPrincipal ? 'Principal' : 'Hacer principal'}
+              </button>
               {esMio && editando && (
-                <button className="btn-ghost text-xs border border-gray-200" onClick={() => setAgregando(true)}>+ Agregar gráfica</button>
+                <button className="btn-ghost text-xs border border-gray-200 whitespace-nowrap" onClick={() => setAgregando(true)}>+ Agregar gráfica</button>
               )}
               {esMio && (
                 <button type="button" onClick={() => { setEditando(e => !e); setSel(null) }} aria-pressed={editando}
@@ -325,13 +355,19 @@ export default function DashboardEditor() {
               {esMio && <button className="btn-primary mx-auto mt-3 text-xs" onClick={() => { setEditando(true); setAgregando(true) }}>Agregar la primera gráfica</button>}
             </div>
           ) : (
-            <div className="grid grid-cols-12 gap-4">
-              {config.widgets.map((w, i) => (
-                <div key={w.id} id={`w-${w.id}`} className={`contents`}>
-                  <Tarjeta widget={w} datos={resultado?.widgets?.[w.id]} cargando={calculando} editando={editando} seleccionada={sel === w.id}
-                    onSeleccionar={() => setSel(w.id)} onDuplicar={() => duplicar(w.id)} onEliminar={() => eliminar(w.id)} dnd={dnd(w, i)} />
-                </div>
-              ))}
+            <div ref={tablero.rejilla} className="grid grid-cols-12 gap-4">
+              {config.widgets.map(w => {
+                const levantada = tablero.arrastrando === w.id
+                return (
+                  <div key={w.id} id={`w-${w.id}`} ref={tablero.caja(w.id)}
+                    className={`relative flex col-span-12 ${CLASE_ANCHO[w.ancho] || CLASE_ANCHO[6]} ${levantada ? 'z-30' : ''}`}>
+                    {levantada && <div aria-hidden="true" className="absolute inset-0 rounded-xl border-2 border-dashed border-brand-300 bg-brand-50/60" />}
+                    <Tarjeta widget={w} datos={resultado?.widgets?.[w.id]} cargando={calculando} editando={editando} seleccionada={sel === w.id}
+                      levantada={levantada} refTarjeta={tablero.tarjeta(w.id)} onAsa={e => tablero.iniciar(e, w.id)} onTecladoAsa={tecladoAsa(w.id)}
+                      onSeleccionar={() => setSel(w.id)} onDuplicar={() => duplicar(w.id)} onEliminar={() => eliminar(w.id)} />
+                  </div>
+                )
+              })}
             </div>
           )}
         </main>

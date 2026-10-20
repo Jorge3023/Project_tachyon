@@ -12,11 +12,12 @@ Filtro: {"col", "desde"/"hasta" (fecha) | "min"/"max" (número) | "valores" (cat
 """
 import math
 import re
+import unicodedata
 
 import numpy as np
 import pandas as pd
 
-TIPOS = ("kpi", "linea", "area", "barras", "dona", "dispersion", "histograma", "calor", "pareto", "tabla")
+TIPOS = ("kpi", "linea", "area", "barras", "dona", "dispersion", "histograma", "calor", "pareto", "tabla", "mapa")
 AGGS = ("suma", "promedio", "conteo", "min", "max", "mediana", "unicos")
 AGGS_REPARTO = ("suma", "conteo", "unicos")          # las que tienen sentido como "parte de un total"
 GRANOS = ("auto", "dia", "semana", "mes", "trimestre", "anio")
@@ -25,6 +26,7 @@ MAX_WIDGETS = 24
 MAX_FILTROS = 8
 MAX_VALORES_FILTRO = 200
 MAX_PUNTOS_DISPERSION = 1500
+MAX_PUNTOS_MAPA = 800
 MAX_BUCKETS = 3000
 SERIES_MAX = 6
 
@@ -33,7 +35,7 @@ R_DIM = ("categoria", "estado", "identificador")
 R_NUM = ("numero",)
 ETIQUETA_TIPO = {"kpi": "Indicador", "linea": "Líneas", "area": "Área", "barras": "Barras", "dona": "Circular",
                  "dispersion": "Dispersión", "histograma": "Histograma", "calor": "Mapa de calor",
-                 "pareto": "Pareto", "tabla": "Tabla"}
+                 "pareto": "Pareto", "tabla": "Tabla", "mapa": "Mapa geográfico"}
 
 
 class ConfigInvalida(ValueError):
@@ -181,6 +183,14 @@ def _widget(w, roles, i, ids_usados):
         out["medida"] = _col(w, "medida", roles, R_NUM, etiqueta="la métrica")
         out["agg"] = agg() if out["medida"] else "conteo"
         out["top"] = _entero(w.get("top"), 10, 2, 15)
+    elif tipo == "mapa":
+        out["lat"] = _col(w, "lat", roles, R_NUM, True, "la latitud")
+        out["lon"] = _col(w, "lon", roles, R_NUM, True, "la longitud")
+        if out["lat"] == out["lon"]:
+            raise ConfigInvalida("El mapa necesita dos columnas distintas (latitud y longitud)")
+        out["medida"] = _col(w, "medida", roles, R_NUM, etiqueta="la métrica")
+        out["agg"] = agg() if out["medida"] else "conteo"
+        out["serie"] = _col(w, "serie", roles, ("categoria", "estado"), etiqueta="el color por categoría")
     elif tipo == "tabla":
         cols = w.get("columnas")
         if not isinstance(cols, list) or not cols:
@@ -218,7 +228,7 @@ def columnas_usadas(config):
     for w in config["widgets"]:
         for f in w["filtros"]:
             cols.add(f["col"])
-        for campo in ("x", "y", "medida", "serie", "orden"):
+        for campo in ("x", "y", "lat", "lon", "medida", "serie", "orden"):
             if w.get(campo):
                 cols.add(w[campo])
         cols.update(w.get("columnas", []))
@@ -500,6 +510,59 @@ def _calc_dispersion(df, w, roles, gg):
     return {"puntos": pts, "series": nombres, "total": int(total), "muestra": len(d), "correlacion": r}
 
 
+_AGG_PANDAS = {"suma": "sum", "promedio": "mean", "min": "min", "max": "max", "mediana": "median", "unicos": "nunique"}
+_CELDAS_MAPA = (0.0001, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0)   # grados; ~11 m ... ~1100 km
+
+
+def _calc_mapa(df, w, roles, gg):
+    """Puntos sobre un mapa. Si hay demasiados, se agrupan en una cuadrícula cada vez más gruesa (máx. MAX_PUNTOS_MAPA)."""
+    la, lo, med, ser = w["lat"], w["lon"], w.get("medida"), w.get("serie")
+    cols = list(dict.fromkeys([la, lo] + ([med] if med else []) + ([ser] if ser else [])))
+    d = df[cols].dropna(subset=[la, lo])
+    d = d.assign(**{la: d[la].astype(float), lo: d[lo].astype(float)})
+    ok = d[la].between(-90, 90) & d[lo].between(-180, 180)
+    fuera = int((~ok).sum())
+    d = d[ok]
+    if d.empty:
+        return {"puntos": [], "series": [], "total": 0, "fuera": fuera,
+                "advertencia": (f"{fuera} filas tienen coordenadas fuera de rango (latitud ±90, longitud ±180)" if fuera else None)}
+    # color por categoría (las menos frecuentes pasan a «Otros»)
+    nombres, cod = [], None
+    if ser:
+        sk, _ = _top_con_otros(d[ser].astype("string").fillna("(vacío)"), SERIES_MAX)
+        cat = pd.Categorical(sk)
+        nombres, cod = [str(c) for c in cat.categories], pd.Series(cat.codes, index=d.index)
+    # celda más fina con la que no se pasa del máximo de puntos
+    celda = _CELDAS_MAPA[-1]
+    for c in _CELDAS_MAPA:
+        kl, ko = np.round(d[la] / c).astype("int64"), np.round(d[lo] / c).astype("int64")
+        if len(pd.MultiIndex.from_arrays([kl, ko]).unique()) <= MAX_PUNTOS_MAPA:
+            celda = c
+            break
+    kl, ko = np.round(d[la] / celda).astype("int64"), np.round(d[lo] / celda).astype("int64")
+    g = d.groupby([kl.rename("_a"), ko.rename("_b")], sort=False)
+    n = g.size()
+    out = pd.DataFrame({"lat": g[la].mean(), "lon": g[lo].mean(), "n": n})
+    if med and w["agg"] != "conteo":
+        out["valor"] = getattr(g[med], _AGG_PANDAS[w["agg"]])()
+    else:
+        out["valor"] = n
+    if cod is not None:
+        out["cat"] = cod.groupby([kl, ko], sort=False).agg(lambda s: int(s.mode().iat[0]))
+    out = out.sort_values("valor", ascending=False, kind="stable")      # los grandes primero (se dibujan al fondo)
+    pts = [[_n(r.lat, 5), _n(r.lon, 5), _n(r.valor), int(r.n)] + ([int(r.cat)] if cod is not None else [])
+           for r in out.itertuples(index=False)]
+    avisos = []
+    if len(d) > len(out):
+        avisos.append(f"{len(d):,} filas en {len(out):,} puntos (las cercanas se agrupan)")
+    if fuera:
+        avisos.append(f"{fuera} filas con coordenadas fuera de rango no se muestran")
+    return {"puntos": pts, "series": nombres, "total": int(len(d)), "fuera": fuera, "celda": celda,
+            "agrupado": bool(len(d) > len(out)), "medida": med, "agg": w["agg"] if med else "conteo",
+            "limites": [[_n(d[la].min(), 5), _n(d[lo].min(), 5)], [_n(d[la].max(), 5), _n(d[lo].max(), 5)]],
+            "advertencia": " · ".join(avisos) if avisos else None}
+
+
 def _calc_histograma(df, w, roles, gg):
     v = df[w["x"]].dropna().astype(float)
     if v.empty:
@@ -547,7 +610,7 @@ def _calc_tabla(df, w, roles, gg):
 
 _CALC = {"kpi": _calc_kpi, "linea": _calc_serie_cat, "area": _calc_serie_cat, "barras": _calc_serie_cat,
          "dona": _calc_reparto, "pareto": _calc_reparto, "dispersion": _calc_dispersion,
-         "histograma": _calc_histograma, "calor": _calc_calor, "tabla": _calc_tabla}
+         "histograma": _calc_histograma, "calor": _calc_calor, "tabla": _calc_tabla, "mapa": _calc_mapa}
 
 
 def calcular(df, config, esquema):
@@ -598,12 +661,34 @@ def _puntaje(nombre):
     return len(_PRIORIDAD)
 
 
+_RX_LAT = re.compile(r"^(lat|latitud|latitude|latitu)$", re.I)
+_RX_LON = re.compile(r"^(lon|lng|long|longitud|longitude)$", re.I)
+
+
+def _norm_geo(nombre):
+    return re.sub(r"[^a-z]", "", unicodedata.normalize("NFKD", str(nombre).lower()).encode("ascii", "ignore").decode())
+
+
+def columnas_geo(esquema, resumen):
+    """(latitud, longitud) si hay dos columnas numéricas con ese nombre y rango válido; si no, (None, None)."""
+    res = {r["nombre"]: r for r in (resumen or [])}
+    nums = [c["nombre"] for c in esquema if c.get("rol") == "numero"]
+
+    def valido(n, tope):
+        r = res.get(n, {})
+        return r.get("min") is not None and r.get("max") is not None and -tope <= r["min"] and r["max"] <= tope
+    la = next((n for n in nums if _RX_LAT.match(_norm_geo(n)) and valido(n, 90)), None)
+    lo = next((n for n in nums if _RX_LON.match(_norm_geo(n)) and valido(n, 180)), None)
+    return (la, lo) if la and lo else (None, None)
+
+
 def sugerir(esquema, resumen):
     """Dashboard propuesto: indicadores + las gráficas que mejor encajan con los tipos de columna detectados."""
     res = {r["nombre"]: r for r in (resumen or [])}
     cols = [c for c in esquema if c.get("rol") != "ignorar"]
     fechas = [c["nombre"] for c in cols if c["rol"] == "fecha"]
-    nums = sorted([c["nombre"] for c in cols if c["rol"] == "numero"], key=_puntaje)   # estable: respeta el orden original
+    lat, lon = columnas_geo(esquema, resumen)
+    nums = sorted([c["nombre"] for c in cols if c["rol"] == "numero" and c["nombre"] not in (lat, lon)], key=_puntaje)   # estable
     dims = [c["nombre"] for c in cols if c["rol"] in ("categoria", "estado")]
 
     def card(n):
@@ -649,5 +734,9 @@ def sugerir(esquema, resumen):
             agg="suma" if (m1 and agg1 == "suma") else "conteo", ancho=6)
     elif fechas and pares:
         add(tipo="calor", titulo=f"{pares[0]} por periodo", x=fechas[0], y=pares[0], grano="mes", ancho=6)
+    if lat and lon:
+        add(tipo="mapa", titulo="Mapa" + (f" de {m1}" if m1 and agg1 == "suma" else ""), lat=lat, lon=lon,
+            medida=m1 if agg1 == "suma" else None, agg="suma" if (m1 and agg1 == "suma") else "conteo",
+            serie=bajas[0] if bajas and card(bajas[0]) <= 6 else None, ancho=12)
     add(tipo="tabla", titulo="Datos", columnas=[c["nombre"] for c in cols][:6], filas=8, ancho=12)
-    return {"v": 1, "grano": "auto", "filtros": [], "widgets": ws[:14]}
+    return {"v": 1, "grano": "auto", "filtros": [], "widgets": ws[:15]}

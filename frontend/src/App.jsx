@@ -3,7 +3,8 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import AppLayout from './components/AppLayout'
 import Login from './pages/Login'
-import Dashboard from './pages/Dashboard'
+import Inicio from './pages/Inicio'
+import Resumen from './pages/Dashboard'
 import Archivos from './pages/Archivos'
 import ElegirUsername from './pages/ElegirUsername'
 import Usuarios from './pages/Usuarios'
@@ -12,6 +13,7 @@ import Proyecto from './pages/Proyecto'
 // El editor trae las librerías de gráficas: se carga solo cuando se abre un dashboard
 const DashboardEditor = lazy(() => import('./pages/DashboardEditor'))
 import { ProyectosProvider } from './context/ProyectosContext'
+import { PrincipalProvider } from './context/PrincipalContext'
 
 function PrivateRoute({ children }) {
   const { usuario, cargando } = useAuth()
@@ -41,7 +43,12 @@ function AppRoutes() {
       {/* Rutas Protegidas */}
       <Route path="/dashboard" element={
         <PrivateRoute>
-          <AppLayout><Dashboard /></AppLayout>
+          <AppLayout><Inicio /></AppLayout>
+        </PrivateRoute>
+      } />
+      <Route path="/resumen" element={
+        <PrivateRoute>
+          <AppLayout><Resumen /></AppLayout>
         </PrivateRoute>
       } />
       <Route path="/archivos" element={
@@ -85,7 +92,9 @@ export default function App() {
     <BrowserRouter basename={import.meta.env.BASE_URL}>
       <AuthProvider>
         <ProyectosProvider>
-          <AppRoutes />
+          <PrincipalProvider>
+            <AppRoutes />
+          </PrincipalProvider>
         </ProyectosProvider>
       </AuthProvider>
     </BrowserRouter>

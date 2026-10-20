@@ -1,5 +1,6 @@
 import {
   TIPOS, ORDEN_TIPOS, ANCHOS, GRANOS, AGGS, PALETA, ROL_TEXTO, aggsPermitidas, motivoNoDisponible, cambiarTipo,
+  candidatasLat, candidatasLon,
 } from '../../lib/dash'
 import ListaFiltros from './Filtros'
 
@@ -90,10 +91,24 @@ export default function PanelConfig({ widget: w, columnas, archivoId, onCambio, 
                 </select>
               </Campo>
             )}
+            {w.tipo === 'mapa' && (
+              <>
+                <Campo etiqueta="Latitud" ayuda="Columna numérica entre −90 y 90.">
+                  <select className={sel} value={w.lat || ''} onChange={e => onCambio({ lat: e.target.value || null })}>
+                    {candidatasLat(columnas).map(c => <option key={c.nombre} value={c.nombre}>{c.nombre}</option>)}
+                  </select>
+                </Campo>
+                <Campo etiqueta="Longitud" ayuda="Columna numérica entre −180 y 180.">
+                  <select className={sel} value={w.lon || ''} onChange={e => onCambio({ lon: e.target.value || null })}>
+                    {candidatasLon(columnas).filter(c => c.nombre !== w.lat).map(c => <option key={c.nombre} value={c.nombre}>{c.nombre}</option>)}
+                  </select>
+                </Campo>
+              </>
+            )}
             {info.campos.medida && (
-              <Campo etiqueta="Métrica">
+              <Campo etiqueta={w.tipo === 'mapa' ? 'Tamaño de los puntos' : 'Métrica'}>
                 <select className={sel} value={w.medida || ''} onChange={e => onCambio({ medida: e.target.value || null })}>
-                  {opcionesCol(info.campos.medida, 'Conteo de filas')}
+                  {opcionesCol(info.campos.medida, w.tipo === 'mapa' ? 'Número de filas' : 'Conteo de filas')}
                 </select>
               </Campo>
             )}
@@ -104,9 +119,9 @@ export default function PanelConfig({ widget: w, columnas, archivoId, onCambio, 
               </Campo>
             )}
             {conSerie && (
-              <Campo etiqueta="Desglosar por (opcional)">
+              <Campo etiqueta={w.tipo === 'mapa' ? 'Color por categoría (opcional)' : 'Desglosar por (opcional)'}>
                 <select className={sel} value={w.serie || ''} onChange={e => onCambio({ serie: e.target.value || null })}>
-                  {opcionesCol(info.campos.serie, 'Sin desglose')}
+                  {opcionesCol(info.campos.serie, w.tipo === 'mapa' ? 'Un solo color' : 'Sin desglose')}
                 </select>
               </Campo>
             )}
@@ -199,7 +214,7 @@ export default function PanelConfig({ widget: w, columnas, archivoId, onCambio, 
           <Segmentado etiqueta="Ancho" valor={w.ancho} onChange={v => onCambio({ ancho: v })} opciones={ANCHOS} />
         </Campo>
 
-        {['linea', 'area', 'barras', 'dispersion', 'histograma', 'pareto'].includes(w.tipo) && !w.serie && (
+        {['linea', 'area', 'barras', 'dispersion', 'histograma', 'pareto', 'mapa'].includes(w.tipo) && !w.serie && (
           <Campo etiqueta="Color">
             <div className="flex gap-1.5 flex-wrap" role="group" aria-label="Color">
               {PALETA.map((c, i) => (
