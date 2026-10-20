@@ -1,19 +1,19 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from datetime import datetime, timedelta
 from typing import Optional, List
-import jwt, bcrypt, json, os, io, math, warnings, re, threading
+import jwt, bcrypt, json, os, io, warnings, re, threading
 from collections import OrderedDict
 from pydantic import BaseModel
-from excel_parser import procesar_excel
+import dashboard as dash
 import detector
 import db
 import storage
 from db import get_db
 
-app = FastAPI(title="ProduccionApp API")
+app = FastAPI(title="Tachyon API")
 
 # CORS: en producción define ALLOWED_ORIGINS con la(s) URL(s) del frontend, separadas por coma
 # (ej. "https://tachyon.pages.dev"). Sin definirla se permite cualquier origen (solo para desarrollo).
@@ -29,7 +29,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"estado": "En línea", "mensaje": "API de ProduccionApp funcionando correctamente en Render",
+    return {"estado": "En línea", "mensaje": "API de Tachyon funcionando correctamente",
             "base_de_datos": db.motor(), "archivos": storage.modo()}
 
 @app.on_event("shutdown")
@@ -79,7 +79,8 @@ def init_db():
                 "ON usuarios(lower(username)) WHERE username IS NOT NULL")
     # Archivos genéricos (cualquier Excel/CSV): tipo, esquema de columnas confirmado y huella de columnas
     cols_a = db.columnas(conn, "archivos")
-    for nueva, ddl in (("tipo", "TEXT DEFAULT 'produccion'"), ("esquema_json", "TEXT"), ("huella", "TEXT")):
+    for nueva, ddl in (("tipo", "TEXT DEFAULT 'produccion'"), ("esquema_json", "TEXT"), ("huella", "TEXT"),
+                       ("proyecto_id", "INTEGER")):
         if nueva not in cols_a:
             cur.execute(f"ALTER TABLE archivos ADD COLUMN {nueva} {ddl}")
     cur.execute(db.ddl("""CREATE TABLE IF NOT EXISTS plantillas (
@@ -87,6 +88,18 @@ def init_db():
         owner_id INTEGER NOT NULL, nombre TEXT NOT NULL, huella TEXT NOT NULL,
         config_json TEXT NOT NULL, creado_en {TS},
         UNIQUE(owner_id, huella))"""))
+    # Proyectos: carpetas personales para agrupar archivos (cada quien ve solo los suyos)
+    cur.execute(db.ddl("""CREATE TABLE IF NOT EXISTS proyectos (
+        id {PK},
+        owner_id INTEGER NOT NULL, nombre TEXT NOT NULL, creado_en {TS})"""))
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_proyectos_owner ON proyectos(owner_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_archivos_proyecto ON archivos(proyecto_id)")
+    # Vistas de dashboard: configuración (gráficas + filtros) guardada por archivo; la edita solo el dueño
+    cur.execute(db.ddl("""CREATE TABLE IF NOT EXISTS dashboards (
+        id {PK},
+        archivo_id INTEGER NOT NULL, owner_id INTEGER NOT NULL, nombre TEXT NOT NULL, config_json TEXT NOT NULL,
+        creado_en {TS}, actualizado_en {TS})"""))
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_dashboards_archivo ON dashboards(archivo_id)")
     # Archivos compartidos con otras personas por correo (solo lectura)
     cur.execute(db.ddl("""CREATE TABLE IF NOT EXISTS comparticiones (
         id {PK},
@@ -217,31 +230,126 @@ def _archivo_propio(conn, archivo_id, u):
     return a
 
 @app.get("/archivos")
-def listar_archivos(linea: Optional[str] = None, origen: str = "todos", u=Depends(get_usuario_actual)):
-    """origen: 'mios' | 'compartidos' | 'todos'."""
+def listar_archivos(origen: str = "todos", proyecto: Optional[str] = None, u=Depends(get_usuario_actual)):
+    """Datasets visibles para el usuario. origen: 'mios' | 'compartidos' | 'todos'.
+    proyecto: id de uno de MIS proyectos, o 'sin' para los que no están en ninguno (solo archivos propios)."""
     conn = get_db()
     cond, params = _cond_visible(u)
-    q = f"""SELECT a.id, a.nombre, a.linea, a.equipo, a.filas, a.estado, a.tipo, a.subido_por, a.subido_en,
+    q = f"""SELECT a.id, a.nombre, a.filas, a.estado, a.tipo, a.subido_por, a.subido_en, a.proyecto_id,
                    COALESCE(us.username, us.nombre) AS subido_por_nombre,
                    (a.subido_por=?) AS es_mio,
                    (SELECT COUNT(*) FROM comparticiones c2 WHERE c2.archivo_id=a.id) AS num_compartidos
             FROM archivos a LEFT JOIN usuarios us ON a.subido_por=us.id
-            WHERE {cond} AND a.estado<>'borrador'"""
+            WHERE {cond} AND a.estado<>'borrador' AND a.tipo='generico'"""
     params = [u["id"], *params]
     if origen == "mios":
         q += " AND a.subido_por=?"; params.append(u["id"])
     elif origen == "compartidos":
         q += " AND a.subido_por<>?"; params.append(u["id"])
-    if linea:
-        q += " AND a.linea=?"; params.append(linea)
+    if proyecto == "sin":
+        q += " AND a.subido_por=? AND a.proyecto_id IS NULL"; params.append(u["id"])
+    elif proyecto:
+        if not proyecto.isdigit():
+            raise HTTPException(status_code=422, detail="Proyecto no válido")
+        q += " AND a.subido_por=? AND a.proyecto_id=?"; params += [u["id"], int(proyecto)]
     q += " ORDER BY a.subido_en DESC LIMIT 50"
     rows = conn.execute(q, params).fetchall(); conn.close()
     out = []
     for r in rows:
         d = dict(r); d["es_mio"] = bool(d["es_mio"])
-        if not d["es_mio"]: d["num_compartidos"] = None   # solo el dueño ve con cuántos se comparte
+        if not d["es_mio"]:
+            d["num_compartidos"] = None   # solo el dueño ve con cuántos se comparte
+            d["proyecto_id"] = None       # los proyectos son personales de cada quien
         out.append(d)
     return out
+
+# ── Proyectos (carpetas personales de archivos) ─────────────────────────────────
+MAX_PROYECTOS = 50
+
+class ProyectoIn(BaseModel):
+    nombre: str
+
+class MoverIn(BaseModel):
+    proyecto_id: Optional[int] = None
+
+def _nombre_proyecto(texto):
+    n = " ".join((texto or "").split())
+    if not 1 <= len(n) <= 40:
+        raise HTTPException(status_code=422, detail="El nombre del proyecto debe tener entre 1 y 40 caracteres")
+    return n
+
+def _proyecto_propio(conn, proyecto_id, u):
+    p = conn.execute("SELECT * FROM proyectos WHERE id=? AND owner_id=?", (proyecto_id, u["id"])).fetchone()
+    if not p:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    return p
+
+def _nombre_libre(conn, nombre, u, excepto=None):
+    for r in conn.execute("SELECT id, nombre FROM proyectos WHERE owner_id=?", (u["id"],)).fetchall():
+        if r["nombre"].lower() == nombre.lower() and r["id"] != excepto:
+            raise HTTPException(status_code=409, detail="Ya tienes un proyecto con ese nombre")
+
+@app.get("/proyectos")
+def listar_proyectos(u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        rows = conn.execute("""SELECT p.id, p.nombre, p.creado_en,
+                   (SELECT COUNT(*) FROM archivos a WHERE a.proyecto_id=p.id AND a.subido_por=p.owner_id
+                    AND a.estado='procesado' AND a.tipo='generico') AS num_archivos
+                FROM proyectos p WHERE p.owner_id=? ORDER BY lower(p.nombre)""", (u["id"],)).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+@app.post("/proyectos")
+def crear_proyecto(datos: ProyectoIn, u=Depends(get_usuario_actual)):
+    nombre = _nombre_proyecto(datos.nombre)
+    conn = get_db()
+    try:
+        _nombre_libre(conn, nombre, u)
+        if conn.execute("SELECT COUNT(*) AS n FROM proyectos WHERE owner_id=?", (u["id"],)).fetchone()["n"] >= MAX_PROYECTOS:
+            raise HTTPException(status_code=422, detail=f"Máximo {MAX_PROYECTOS} proyectos")
+        cur = conn.execute("INSERT INTO proyectos (owner_id, nombre) VALUES (?,?)", (u["id"], nombre))
+        pid = cur.lastrowid; conn.commit()
+    finally:
+        conn.close()
+    return {"id": pid, "nombre": nombre, "num_archivos": 0}
+
+@app.patch("/proyectos/{proyecto_id}")
+def renombrar_proyecto(proyecto_id: int, datos: ProyectoIn, u=Depends(get_usuario_actual)):
+    nombre = _nombre_proyecto(datos.nombre)
+    conn = get_db()
+    try:
+        _proyecto_propio(conn, proyecto_id, u)
+        _nombre_libre(conn, nombre, u, excepto=proyecto_id)
+        conn.execute("UPDATE proyectos SET nombre=? WHERE id=?", (nombre, proyecto_id)); conn.commit()
+    finally:
+        conn.close()
+    return {"id": proyecto_id, "nombre": nombre}
+
+@app.delete("/proyectos/{proyecto_id}")
+def borrar_proyecto(proyecto_id: int, u=Depends(get_usuario_actual)):
+    """Borra el proyecto, NO sus archivos: quedan sin proyecto."""
+    conn = get_db()
+    try:
+        _proyecto_propio(conn, proyecto_id, u)
+        conn.execute("UPDATE archivos SET proyecto_id=NULL WHERE proyecto_id=? AND subido_por=?", (proyecto_id, u["id"]))
+        conn.execute("DELETE FROM proyectos WHERE id=?", (proyecto_id,)); conn.commit()
+    finally:
+        conn.close()
+    return {"mensaje": "Proyecto eliminado; sus archivos siguen en Mis archivos"}
+
+@app.put("/archivos/{archivo_id}/proyecto")
+def mover_a_proyecto(archivo_id: int, datos: MoverIn, u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        _archivo_propio(conn, archivo_id, u)
+        if datos.proyecto_id is not None:
+            _proyecto_propio(conn, datos.proyecto_id, u)
+        conn.execute("UPDATE archivos SET proyecto_id=? WHERE id=?", (datos.proyecto_id, archivo_id)); conn.commit()
+    finally:
+        conn.close()
+    return {"archivo_id": archivo_id, "proyecto_id": datos.proyecto_id}
 
 # ── Compartir por correo (solo el dueño)
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -289,95 +397,6 @@ def dejar_de_compartir(archivo_id: int, correo: str, u=Depends(get_usuario_actua
         conn.close()
     return {"mensaje": "Se dejó de compartir"}
 
-@app.post("/archivos/upload")
-async def upload_archivo(
-    file: UploadFile = File(...),
-    linea: str = Query(default="A"),
-    password_confirmacion: str = Query(default=""),
-    u=Depends(get_usuario_actual)
-):
-    # Verificar contraseña de confirmación
-    conn = get_db()
-    usuario_db = conn.execute("SELECT password_hash FROM usuarios WHERE id=?", (u["id"],)).fetchone()
-    conn.close()
-    if not password_confirmacion:
-        raise HTTPException(status_code=401, detail="Debes confirmar tu contraseña")
-
-    if not bcrypt.checkpw(password_confirmacion.encode(), usuario_db["password_hash"].encode()):
-        raise HTTPException(status_code=401, detail="Contraseña de confirmación incorrecta")
-
-    contenido = await file.read()
-    if not contenido:
-        raise HTTPException(status_code=422, detail="El archivo está vacío")
-
-    conn = get_db()
-    cur = conn.execute("""INSERT INTO archivos (nombre,linea,filas,estado,subido_por)
-                          VALUES (?,?,?,'procesando',?)""",
-                       (file.filename, linea, 0, u["id"]))
-    archivo_id = cur.lastrowid; conn.commit()
-
-    try:
-        print("=== Iniciando procesamiento ===")
-        resultado  = procesar_excel(contenido, linea=linea)
-        print("=== Parser completado ===")
-        reporte    = resultado["reporte"]
-        resumen    = resultado["resumen"]
-        excel_out  = resultado["excel_out"]
-        equipo     = reporte["Equipment"].iloc[0] if "Equipment" in reporte.columns and len(reporte) > 0 else ""
-
-        storage.put(f"reportes/{archivo_id}_reporte.xlsx", excel_out,
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        # El reporte completo va al Storage (Parquet), no a la base de datos: en la base solo quedan metadatos.
-        _guardar_reporte(archivo_id, reporte)
-
-        conn.execute("""UPDATE archivos
-                        SET filas=?,estado='procesado',reporte_json=NULL,resumen_json=?,equipo=?
-                        WHERE id=?""",
-                     (resumen["total_registros"], json.dumps(resumen), equipo, archivo_id))
-        conn.commit(); conn.close()
-        return {"mensaje": f"✓ '{file.filename}' procesado correctamente.",
-                "archivo_id": archivo_id, "resumen": resumen}
-    except Exception as e:
-        import traceback
-        print("=== ERROR DETALLADO ===")
-        traceback.print_exc()
-        print(f"=== Error mensaje: {str(e)} ===")
-        conn.execute("UPDATE archivos SET estado='error' WHERE id=?", (archivo_id,))
-        conn.commit(); conn.close()
-        for ruta in (f"reportes/{archivo_id}_reporte.xlsx", f"reportes/{archivo_id}_reporte.parquet"):
-            try: storage.delete(ruta)       # no dejar archivos huérfanos de un procesamiento fallido
-            except Exception: pass
-        raise HTTPException(status_code=422, detail=f"Error al procesar: {str(e)}")
-
-@app.get("/archivos/{archivo_id}/descargar")
-def descargar(archivo_id: int, u=Depends(get_usuario_actual)):
-    conn = get_db()
-    try:
-        a = _archivo_con_acceso(conn, archivo_id, u)
-    finally:
-        conn.close()
-    try:
-        data = storage.get(f"reportes/{archivo_id}_reporte.xlsx")
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Reporte no encontrado")
-    nombre = (a["nombre"].rsplit(".", 1)[0] if a else f"reporte_{archivo_id}") + "_analisis.xlsx"
-    return StreamingResponse(io.BytesIO(data),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{nombre}"'})
-
-@app.get("/archivos/{archivo_id}/reporte")
-def ver_reporte(archivo_id: int, u=Depends(get_usuario_actual)):
-    conn = get_db()
-    try:
-        row = _archivo_con_acceso(conn, archivo_id, u)
-    finally:
-        conn.close()
-    df = _leer_reporte(archivo_id, row["reporte_json"])
-    if df is None:
-        raise HTTPException(status_code=404, detail="Reporte no disponible")
-    return {"reporte": json.loads(df.to_json(orient="records", date_format="iso")),
-            "resumen": json.loads(row["resumen_json"]) if row["resumen_json"] else {}}
-
 @app.delete("/archivos/{archivo_id}")
 def eliminar_archivo(archivo_id: int, u=Depends(get_usuario_actual)):
     conn = get_db()
@@ -387,208 +406,16 @@ def eliminar_archivo(archivo_id: int, u=Depends(get_usuario_actual)):
         conn.close(); raise
 
     conn.execute("DELETE FROM comparticiones WHERE archivo_id=?", (archivo_id,))
+    conn.execute("DELETE FROM dashboards WHERE archivo_id=?", (archivo_id,))
     conn.execute("DELETE FROM archivos WHERE id=?", (archivo_id,))
     conn.commit()
     conn.close()
+    _olvidar_parquet(archivo_id)
 
-    _olvidar_reporte(archivo_id)
-    for ruta in (f"reportes/{archivo_id}_reporte.xlsx", f"reportes/{archivo_id}_reporte.parquet",
-                 f"datasets/{archivo_id}.parquet", f"borradores/{archivo_id}.src"):
+    for ruta in (f"datasets/{archivo_id}.parquet", f"borradores/{archivo_id}.src"):
         storage.delete(ruta)
 
     return {"mensaje": "Archivo eliminado correctamente", "archivo_id": archivo_id}
-
-# ── Dashboard — datos reales de archivos procesados ───────────────────────────
-def _num(x, nd=None):
-    """Convierte a número JSON-seguro: NaN/inf/None -> None (JSON no admite NaN)."""
-    try:
-        x = float(x)
-    except (TypeError, ValueError):
-        return None
-    if math.isnan(x) or math.isinf(x):
-        return None
-    return round(x, nd) if nd is not None else x
-
-def _limpiar_registros(registros):
-    """Reemplaza NaN/inf por None en una lista de dicts (salida de DataFrame.to_dict)."""
-    return [{k: (_num(v) if isinstance(v, float) else v) for k, v in r.items()} for r in registros]
-
-# ── Reportes de producción en el Storage (Parquet) ────────────────────────────
-# Cada reporte se guarda como reportes/{id}_reporte.parquet. La columna archivos.reporte_json solo la usan
-# las filas antiguas (anteriores a este cambio): si existe, se lee de ahí como respaldo.
-# Los reportes no cambian después de procesarse, así que se guardan en una caché pequeña en memoria para que
-# cada consulta del dashboard no vuelva a bajarlos del Storage. Se vacía al borrar un archivo.
-_REPORTES_CACHE_MAX = int(os.getenv("REPORTES_CACHE_MAX", "128"))
-_reportes_cache = OrderedDict()
-_reportes_lock = threading.Lock()
-
-def _guardar_reporte(archivo_id: int, reporte):
-    buf = io.BytesIO()
-    try:
-        reporte.to_parquet(buf, engine="pyarrow", compression="zstd", index=False)
-    except Exception:
-        # columnas con tipos mezclados que Parquet no admite: se guardan como texto
-        r = reporte.copy()
-        for c in r.columns:
-            if r[c].dtype == object:
-                r[c] = r[c].astype(str)
-        buf = io.BytesIO()
-        r.to_parquet(buf, engine="pyarrow", compression="zstd", index=False)
-    storage.put(f"reportes/{archivo_id}_reporte.parquet", buf.getvalue(), "application/octet-stream")
-
-def _olvidar_reporte(archivo_id: int):
-    with _reportes_lock:
-        _reportes_cache.pop(archivo_id, None)
-
-def _leer_reporte(archivo_id: int, json_antiguo=None):
-    """DataFrame del reporte de un archivo (copia propia), o None si no existe."""
-    import pandas as pd
-    with _reportes_lock:
-        df = _reportes_cache.get(archivo_id)
-        if df is not None:
-            _reportes_cache.move_to_end(archivo_id)
-            return df.copy()
-    try:
-        df = pd.read_parquet(io.BytesIO(storage.get(f"reportes/{archivo_id}_reporte.parquet")), engine="pyarrow")
-    except FileNotFoundError:
-        if not json_antiguo:
-            return None
-        df = pd.read_json(io.StringIO(json_antiguo))
-    with _reportes_lock:
-        _reportes_cache[archivo_id] = df
-        while len(_reportes_cache) > _REPORTES_CACHE_MAX:
-            _reportes_cache.popitem(last=False)
-    return df.copy()
-
-def _get_todos_reportes(linea: Optional[str], u):
-    """Carga y une los reportes procesados que el usuario puede ver (suyos + compartidos con él)."""
-    import pandas as pd
-    conn = get_db()
-    cond, params = _cond_visible(u, "archivos")
-    q = (f"SELECT id, reporte_json, linea FROM archivos WHERE estado='procesado' "
-         f"AND COALESCE(tipo,'produccion') <> 'generico' AND {cond}")
-    if linea:
-        q += " AND linea=?"; params.append(linea)
-    rows = conn.execute(q + " ORDER BY id", params).fetchall(); conn.close()
-    if not rows: return pd.DataFrame()
-    dfs = []
-    for row in rows:
-        try:
-            df = _leer_reporte(row["id"], row["reporte_json"])
-            if df is None:
-                continue
-            df["linea"] = row["linea"]
-            dfs.append(df)
-        except Exception:
-            pass
-    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-
-@app.get("/dashboard/resumen")
-def resumen_dashboard(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_usuario_actual)):
-    import pandas as pd
-    df = _get_todos_reportes(linea, u)
-    if df.empty:
-        return {"unidades": 0, "rechazos": 0, "eficiencia": 0,
-                "tiempo_paro": 0, "horas_reales": 0, "fuente": "sin_datos"}
-
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-    hoy = pd.Timestamp.now().normalize()
-    if   periodo == "dia":    df = df[df["Date"] >= hoy]
-    elif periodo == "semana": df = df[df["Date"] >= hoy - timedelta(days=7)]
-    else:                     df = df[df["Date"] >= hoy - timedelta(days=30)]
-
-    if df.empty:
-        # Devolver todos si no hay del periodo (datos de prueba pueden ser de otro día)
-        df = _get_todos_reportes(linea, u)
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-
-    return {
-        "unidades":     int(df["qty_passed"].sum()),
-        "rechazos":     int(df["qty_failed"].sum()),
-        "eficiencia":   _num(df["rendimiento_%"].mean(), 1) or 0 if "rendimiento_%" in df else 0,
-        "tiempo_paro":  round(float(df["horas_muertas"].sum()), 2),
-        "horas_reales": round(float(df["horas_reales"].sum()), 2),
-        "fuente":       "real",
-    }
-
-@app.get("/dashboard/por-modelo")
-def por_modelo(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_usuario_actual)):
-    import pandas as pd
-    df = _get_todos_reportes(linea, u)
-    if df.empty: return []
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-    hoy = pd.Timestamp.now().normalize()
-    if   periodo == "dia":    mask = df["Date"] >= hoy
-    elif periodo == "semana": mask = df["Date"] >= hoy - timedelta(days=7)
-    else:                     mask = df["Date"] >= hoy - timedelta(days=30)
-    df = df[mask] if mask.any() else df
-    res = (df.groupby("ProductID", as_index=False)
-             .agg(qty_passed=("qty_passed","sum"),
-                  qty_failed=("qty_failed","sum"),
-                  horas_reales=("horas_reales","sum"),
-                  horas_muertas=("horas_muertas","sum"))
-             .sort_values("qty_passed", ascending=False)
-             .head(10))
-    return _limpiar_registros(res.to_dict(orient="records"))
-
-@app.get("/dashboard/por-linea")
-def por_linea(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_usuario_actual)):
-    import pandas as pd
-    df = _get_todos_reportes(linea, u)
-    if df.empty: return []
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-    hoy = pd.Timestamp.now().normalize()
-    if   periodo == "dia":    mask = df["Date"] >= hoy
-    elif periodo == "semana": mask = df["Date"] >= hoy - timedelta(days=7)
-    else:                     mask = df["Date"] >= hoy - timedelta(days=30)
-    df = df[mask] if mask.any() else df
-    res = (df.groupby("linea", as_index=False)
-             .agg(qty_passed=("qty_passed","sum"),
-                  qty_failed=("qty_failed","sum"),
-                  horas_reales=("horas_reales","sum"),
-                  horas_muertas=("horas_muertas","sum"),
-                  rendimiento=("rendimiento_%","mean"))
-             .sort_values("linea"))
-    return _limpiar_registros(res.to_dict(orient="records"))
-
-@app.get("/dashboard/tendencia")
-def tendencia(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_usuario_actual)):
-    import pandas as pd
-    df = _get_todos_reportes(linea, u)
-    if df.empty: return []
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-    hoy = pd.Timestamp.now().normalize()
-    if   periodo == "dia":    mask = df["Date"] >= hoy
-    elif periodo == "semana": mask = df["Date"] >= hoy - timedelta(days=7)
-    else:                     mask = df["Date"] >= hoy - timedelta(days=30)
-    df = df[mask] if mask.any() else df
-    df["fecha"] = df["Date"].dt.strftime("%Y-%m-%d")
-    res = (df.groupby("fecha", as_index=False)
-             .agg(qty_passed=("qty_passed","sum"),
-                  qty_failed=("qty_failed","sum"),
-                  horas_reales=("horas_reales","sum"))
-             .sort_values("fecha"))
-    return _limpiar_registros(res.to_dict(orient="records"))
-
-@app.get("/dashboard/rendimiento-lineas")
-def rendimiento_lineas(periodo: str = "dia", linea: Optional[str] = None, u=Depends(get_usuario_actual)):
-    import pandas as pd
-    df = _get_todos_reportes(linea, u)
-    if df.empty: return []
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-    hoy = pd.Timestamp.now().normalize()
-    if   periodo == "dia":    mask = df["Date"] >= hoy
-    elif periodo == "semana": mask = df["Date"] >= hoy - timedelta(days=7)
-    else:                     mask = df["Date"] >= hoy - timedelta(days=30)
-    df = df[mask] if mask.any() else df
-    res = (df.groupby("linea", as_index=False)
-             .agg(rendimiento=("rendimiento_%","mean"),
-                  horas_muertas=("horas_muertas","sum"),
-                  qty_passed=("qty_passed","sum")))
-    return [{"linea": r["linea"],
-             "rendimiento": _num(r["rendimiento"], 1),
-             "horas_muertas": _num(r["horas_muertas"], 2),
-             "qty_passed": int(r["qty_passed"])} for _, r in res.iterrows()]
 
 # ── Usuarios ───────────────────────────────────────────────────────────────────
 @app.get("/admin/diagnostico")
@@ -699,6 +526,7 @@ class ConfirmarIn(BaseModel):
     columnas: List[ColumnaIn]
     guardar_plantilla: bool = False
     nombre_plantilla: Optional[str] = None
+    proyecto_id: Optional[int] = None     # proyecto donde guardar el archivo (opcional)
 
 def _json_seguro(obj):
     """Convierte tipos de numpy/pandas a tipos JSON normales."""
@@ -818,6 +646,8 @@ def confirmar_dataset(archivo_id: int, datos: ConfirmarIn, u=Depends(get_usuario
     conn = get_db()
     try:
         a = _borrador_propio(conn, archivo_id, u)
+        if datos.proyecto_id is not None:
+            _proyecto_propio(conn, datos.proyecto_id, u)
         contenido = _leer_borrador(archivo_id)
         for c in datos.columnas:
             if c.rol not in detector.ROLES:
@@ -847,10 +677,10 @@ def confirmar_dataset(archivo_id: int, datos: ConfirmarIn, u=Depends(get_usuario
             # El resumen por columna se calcula una sola vez, aquí, y se guarda (es pequeño)
             resumen = _json_seguro(detector.resumen_columnas(
                 limpio, [{"nombre": c["nombre"], "rol": c["rol"]} for c in esquema]))
-            conn.execute("""UPDATE archivos SET estado='procesado', filas=?, esquema_json=?, huella=?, resumen_json=?
-                            WHERE id=?""",
+            conn.execute("""UPDATE archivos SET estado='procesado', filas=?, esquema_json=?, huella=?, resumen_json=?,
+                            proyecto_id=? WHERE id=?""",
                          (int(len(limpio)), json.dumps({"hoja": r["hoja"], "fila_encabezado": r["fila_encabezado"],
-                                                        "columnas": esquema}), hf, json.dumps(resumen), archivo_id))
+                                                        "columnas": esquema}), hf, json.dumps(resumen), datos.proyecto_id, archivo_id))
             plantilla_guardada = False
             if datos.guardar_plantilla:
                 cfg = {"columnas": [{"nombre_origen": c["nombre"], "rol": c["rol"], "nombre_mostrar": c["nombre_mostrar"]}
@@ -872,13 +702,41 @@ def confirmar_dataset(archivo_id: int, datos: ConfirmarIn, u=Depends(get_usuario
 
 FILAS_POR_GRUPO = 10_000     # filas por grupo dentro de cada Parquet de datasets
 
-def _datos_dataset(a):
-    """(esquema, bytes del Parquet comprimido) de un dataset procesado; 404 si no está disponible."""
+# Caché pequeña de Parquets recientes (un dataset confirmado nunca cambia): evita bajar de Storage el mismo archivo
+# en cada gráfica o página. Se llama solo después de comprobar que el usuario puede ver el archivo.
+_PARQUET_CACHE: "OrderedDict[int, bytes]" = OrderedDict()
+_PARQUET_CACHE_LOCK = threading.Lock()
+PARQUET_CACHE_MAX_BYTES = int(os.getenv("PARQUET_CACHE_MAX_MB", "40")) * 1024 * 1024
+
+def _olvidar_parquet(archivo_id):
+    with _PARQUET_CACHE_LOCK:
+        _PARQUET_CACHE.pop(archivo_id, None)
+
+def _parquet_bytes(archivo_id):
+    with _PARQUET_CACHE_LOCK:
+        if archivo_id in _PARQUET_CACHE:
+            _PARQUET_CACHE.move_to_end(archivo_id)
+            return _PARQUET_CACHE[archivo_id]
+    datos = storage.get(f"datasets/{archivo_id}.parquet")
+    if len(datos) <= PARQUET_CACHE_MAX_BYTES:
+        with _PARQUET_CACHE_LOCK:
+            _PARQUET_CACHE[archivo_id] = datos
+            while sum(len(v) for v in _PARQUET_CACHE.values()) > PARQUET_CACHE_MAX_BYTES:
+                _PARQUET_CACHE.popitem(last=False)
+    return datos
+
+def _esquema_dataset(a):
+    """Esquema (columnas confirmadas) de un dataset procesado; 404 si no está disponible."""
     esquema = json.loads(a["esquema_json"] or "{}").get("columnas", [])
     if a["tipo"] != "generico" or a["estado"] != "procesado" or not esquema:
         raise HTTPException(status_code=404, detail="Datos no disponibles")
+    return esquema
+
+def _datos_dataset(a):
+    """(esquema, bytes del Parquet comprimido) de un dataset procesado; 404 si no está disponible."""
+    esquema = _esquema_dataset(a)
     try:
-        return esquema, storage.get(f"datasets/{a['id']}.parquet")
+        return esquema, _parquet_bytes(a["id"])
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Datos no disponibles")
 
@@ -936,6 +794,165 @@ def ver_dataset(archivo_id: int, pagina: int = Query(1, ge=1), por_pagina: int =
     })
 
 # ── Plantillas guardadas (privadas de cada usuario)
+# ── Dashboards (vistas por archivo) ─────────────────────────────────────────────────────────────────
+# La configuración (gráficas + filtros) se valida contra el esquema real del archivo y se calcula aquí, en el
+# servidor: el navegador solo recibe resultados agregados. Ven las vistas el dueño y con quien se compartió el
+# archivo (solo lectura); solo el dueño las crea, edita o borra.
+MAX_VISTAS = 10
+
+class ConfigDashIn(BaseModel):
+    config: dict
+
+class VistaIn(BaseModel):
+    nombre: Optional[str] = None
+    config: Optional[dict] = None
+
+def _nombre_vista(texto):
+    n = " ".join((texto or "").split())
+    if not 1 <= len(n) <= 40:
+        raise HTTPException(status_code=422, detail="El nombre de la vista debe tener entre 1 y 40 caracteres")
+    return n
+
+def _config_limpia(config, esquema):
+    try:
+        return dash.limpiar_config(config, esquema)
+    except dash.ConfigInvalida as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+def _vista_de(conn, a, vista_id):
+    v = conn.execute("SELECT * FROM dashboards WHERE id=? AND archivo_id=?", (vista_id, a["id"])).fetchone()
+    if not v:
+        raise HTTPException(status_code=404, detail="Vista no encontrada")
+    return v
+
+def _lista_vistas(conn, a):
+    return [{"id": r["id"], "nombre": r["nombre"]} for r in
+            conn.execute("SELECT id, nombre FROM dashboards WHERE archivo_id=? ORDER BY id", (a["id"],)).fetchall()]
+
+@app.get("/datasets/{archivo_id}/dashboard")
+def ver_dashboard(archivo_id: int, vista: Optional[int] = None, u=Depends(get_usuario_actual)):
+    """Vista guardada (la pedida o la primera) o, si el archivo aún no tiene ninguna, la propuesta automática."""
+    conn = get_db()
+    try:
+        a = _archivo_con_acceso(conn, archivo_id, u)
+        esquema = _esquema_dataset(a)
+        vistas = _lista_vistas(conn, a)
+        config, actual = None, None
+        if vista is not None:
+            actual = _vista_de(conn, a, vista)
+        elif vistas:
+            actual = _vista_de(conn, a, vistas[0]["id"])
+        if actual is not None:
+            try:
+                config = dash.limpiar_config(json.loads(actual["config_json"]), esquema)
+            except (dash.ConfigInvalida, ValueError):
+                config = None                      # configuración dañada: se muestra la propuesta
+        guardada = config is not None
+        if config is None:
+            resumen = json.loads(a["resumen_json"]) if a["resumen_json"] else []
+            config = dash.limpiar_config(dash.sugerir(esquema, resumen), esquema)
+        return {"archivo": {"id": a["id"], "nombre": a["nombre"], "filas": a["filas"], "es_mio": a["subido_por"] == u["id"]},
+                "vistas": vistas,
+                "vista": {"id": actual["id"] if guardada else None,
+                          "nombre": actual["nombre"] if guardada else "Resumen sugerido", "guardada": guardada},
+                "config": config,
+                "columnas": [{"nombre": c["nombre"], "rol": c["rol"]} for c in esquema if c["rol"] != "ignorar"]}
+    finally:
+        conn.close()
+
+@app.post("/datasets/{archivo_id}/dashboard/datos")
+def datos_dashboard(archivo_id: int, datos: ConfigDashIn, u=Depends(get_usuario_actual)):
+    """Calcula las gráficas de una configuración (guardada o en edición) sobre el archivo, ya filtrado y agregado."""
+    import pandas as pd
+    import pyarrow.parquet as pq
+    conn = get_db()
+    try:
+        a = _archivo_con_acceso(conn, archivo_id, u)
+    finally:
+        conn.close()
+    esquema, parquet = _datos_dataset(a)
+    config = _config_limpia(datos.config, esquema)
+    cols = dash.columnas_usadas(config)
+    pf = pq.ParquetFile(io.BytesIO(parquet))
+    if cols:
+        df = pf.read(columns=cols).to_pandas()
+    else:
+        df = pd.DataFrame(index=range(pf.metadata.num_rows))
+    out = dash.calcular(df, config, esquema)
+    out["config"] = config
+    return out
+
+@app.get("/datasets/{archivo_id}/valores")
+def valores_columna(archivo_id: int, columna: str, u=Depends(get_usuario_actual)):
+    """Valores posibles de una columna (para armar filtros): categorías más frecuentes, o mínimo y máximo."""
+    import pyarrow.parquet as pq
+    conn = get_db()
+    try:
+        a = _archivo_con_acceso(conn, archivo_id, u)
+    finally:
+        conn.close()
+    esquema, parquet = _datos_dataset(a)
+    roles = {c["nombre"]: c["rol"] for c in esquema if c["rol"] != "ignorar"}
+    if columna not in roles:
+        raise HTTPException(status_code=404, detail="Columna no encontrada")
+    serie = pq.ParquetFile(io.BytesIO(parquet)).read(columns=[columna]).to_pandas()[columna]
+    return dash.valores_columna(serie, roles[columna])
+
+@app.post("/datasets/{archivo_id}/dashboard")
+def crear_vista(archivo_id: int, datos: VistaIn, u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        a = _archivo_propio(conn, archivo_id, u)
+        esquema = _esquema_dataset(a)
+        nombre = _nombre_vista(datos.nombre)
+        vistas = _lista_vistas(conn, a)
+        if len(vistas) >= MAX_VISTAS:
+            raise HTTPException(status_code=422, detail=f"Máximo {MAX_VISTAS} vistas por archivo")
+        if any(v["nombre"].lower() == nombre.lower() for v in vistas):
+            raise HTTPException(status_code=409, detail="Ya hay una vista con ese nombre")
+        if datos.config is None:
+            resumen = json.loads(a["resumen_json"]) if a["resumen_json"] else []
+            datos.config = dash.sugerir(esquema, resumen)
+        config = _config_limpia(datos.config, esquema)
+        cur = conn.execute("INSERT INTO dashboards (archivo_id, owner_id, nombre, config_json) VALUES (?,?,?,?)",
+                           (archivo_id, u["id"], nombre, json.dumps(config)))
+        vid = cur.lastrowid; conn.commit()
+    finally:
+        conn.close()
+    return {"id": vid, "nombre": nombre, "config": config}
+
+@app.put("/datasets/{archivo_id}/dashboard/{vista_id}")
+def guardar_vista(archivo_id: int, vista_id: int, datos: VistaIn, u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        a = _archivo_propio(conn, archivo_id, u)
+        esquema = _esquema_dataset(a)
+        v = _vista_de(conn, a, vista_id)
+        nombre, config = v["nombre"], None
+        if datos.nombre is not None:
+            nombre = _nombre_vista(datos.nombre)
+            if any(x["nombre"].lower() == nombre.lower() and x["id"] != vista_id for x in _lista_vistas(conn, a)):
+                raise HTTPException(status_code=409, detail="Ya hay una vista con ese nombre")
+        if datos.config is not None:
+            config = _config_limpia(datos.config, esquema)
+        conn.execute("UPDATE dashboards SET nombre=?, config_json=?, actualizado_en=CURRENT_TIMESTAMP WHERE id=?",
+                     (nombre, json.dumps(config) if config is not None else v["config_json"], vista_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": vista_id, "nombre": nombre, **({"config": config} if config is not None else {})}
+
+@app.delete("/datasets/{archivo_id}/dashboard/{vista_id}")
+def borrar_vista(archivo_id: int, vista_id: int, u=Depends(get_usuario_actual)):
+    conn = get_db()
+    try:
+        a = _archivo_propio(conn, archivo_id, u)
+        _vista_de(conn, a, vista_id)
+        conn.execute("DELETE FROM dashboards WHERE id=?", (vista_id,)); conn.commit()
+    finally:
+        conn.close()
+    return {"mensaje": "Vista eliminada"}
+
 @app.get("/plantillas")
 def listar_plantillas(u=Depends(get_usuario_actual)):
     conn = get_db()

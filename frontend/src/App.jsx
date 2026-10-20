@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import AppLayout from './components/AppLayout'
@@ -7,7 +8,10 @@ import Archivos from './pages/Archivos'
 import ElegirUsername from './pages/ElegirUsername'
 import Usuarios from './pages/Usuarios'
 import VerDatos from './pages/VerDatos'
-import { LineaPage, ReportesPage } from './pages/Placeholders'
+import Proyecto from './pages/Proyecto'
+// El editor trae las librerías de gráficas: se carga solo cuando se abre un dashboard
+const DashboardEditor = lazy(() => import('./pages/DashboardEditor'))
+import { ProyectosProvider } from './context/ProyectosContext'
 
 function PrivateRoute({ children }) {
   const { usuario, cargando } = useAuth()
@@ -45,24 +49,28 @@ function AppRoutes() {
           <AppLayout><Archivos /></AppLayout>
         </PrivateRoute>
       } />
+      <Route path="/datos/:id/dashboard" element={
+        <PrivateRoute>
+          <AppLayout>
+            <Suspense fallback={<div className="flex-1 flex items-center justify-center"><div className="w-6 h-6 border-2 border-brand-600 border-t-transparent rounded-full animate-spin" /></div>}>
+              <DashboardEditor />
+            </Suspense>
+          </AppLayout>
+        </PrivateRoute>
+      } />
       <Route path="/datos/:id" element={
         <PrivateRoute>
           <AppLayout><VerDatos /></AppLayout>
         </PrivateRoute>
       } />
+      <Route path="/proyecto/:id" element={
+        <PrivateRoute>
+          <AppLayout><Proyecto /></AppLayout>
+        </PrivateRoute>
+      } />
       <Route path="/usuarios" element={
         <PrivateRoute>
           <AdminRoute><AppLayout><Usuarios /></AppLayout></AdminRoute>
-        </PrivateRoute>
-      } />
-      <Route path="/reportes" element={
-        <PrivateRoute>
-          <AppLayout><ReportesPage /></AppLayout>
-        </PrivateRoute>
-      } />
-      <Route path="/linea/:id" element={
-        <PrivateRoute>
-          <AppLayout><LineaPage /></AppLayout>
         </PrivateRoute>
       } />
 
@@ -76,7 +84,9 @@ export default function App() {
   return (
     <BrowserRouter basename={import.meta.env.BASE_URL}>
       <AuthProvider>
-        <AppRoutes />
+        <ProyectosProvider>
+          <AppRoutes />
+        </ProyectosProvider>
       </AuthProvider>
     </BrowserRouter>
   )

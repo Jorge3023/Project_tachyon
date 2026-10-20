@@ -62,7 +62,10 @@ export default function VerDatos() {
           {datos && <p className="text-xs text-gray-400 mt-0.5">{datos.total.toLocaleString()} filas · {datos.columnas.length} columnas
             {!datos.archivo.es_mio && ' · compartido contigo (solo lectura)'}</p>}
         </div>
-        <Link to="/archivos" className="btn-ghost text-xs">← Mis archivos</Link>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <Link to={`/datos/${id}/dashboard`} className="btn-ghost text-xs text-brand-600 hover:bg-brand-50">Dashboard</Link>
+          <Link to="/archivos" className="btn-ghost text-xs">← Mis archivos</Link>
+        </div>
       </header>
 
       <main className="flex-1 overflow-y-auto p-6 space-y-5">
