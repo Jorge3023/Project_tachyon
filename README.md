@@ -70,5 +70,3 @@ Proyecto en desarrollo activo. Las próximas etapas se enfocan en más tipos de 
 ---
 
 <sub>Las capturas usan datos de ejemplo generados para esta documentación.</sub>
-
-© 2026 Jorge3023 — Todos los derechos reservados.
