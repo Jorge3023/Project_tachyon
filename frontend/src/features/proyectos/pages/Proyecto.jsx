@@ -7,6 +7,7 @@ import PageHeader from '@/shared/components/PageHeader'
 import FilaArchivo from '@/shared/components/FilaArchivo'
 import Vacio from '@/shared/components/Vacio'
 import Cargando from '@/shared/components/Cargando'
+import useEliminarArchivo from '@/features/archivos/useEliminarArchivo'
 
 export default function Proyecto() {
   const { id } = useParams()
@@ -26,6 +27,8 @@ export default function Proyecto() {
       .then(r => setArchivos(r.data.filter(a => a.estado === 'procesado')))
       .catch(() => {})
       .finally(() => setCargando(false))
+
+  const { pedir: pedirEliminar, aviso: avisoEliminar } = useEliminarArchivo(async () => { await cargar(); recargar() })
 
   useEffect(() => { setCargando(true); setEditando(false); setBorrando(false); cargar() }, [id])
 
@@ -92,11 +95,12 @@ export default function Proyecto() {
           ) : (
             <div className="divide-y divide-gray-50">
               {archivos.map(a => (
-                <FilaArchivo key={a.id} nombre={a.nombre}
+                <FilaArchivo key={a.id} nombre={a.nombre} pie={avisoEliminar(a)}
                   detalle={`${a.filas?.toLocaleString('es-MX') ?? 0} filas · ${new Date(a.subido_en).toLocaleDateString('es-MX')}`}>
                   <button onClick={() => quitar(a)} className="btn-ghost text-xs">Quitar del proyecto</button>
                   <button onClick={() => navigate(`/datos/${a.id}`)} className="btn-ghost text-xs">Ver datos</button>
                   <button onClick={() => navigate(`/datos/${a.id}/dashboard`)} className="btn-secondary text-xs">Dashboard</button>
+                  <button onClick={() => pedirEliminar(a)} className="btn-danger text-xs" aria-label={`Eliminar ${a.nombre}`}>Eliminar</button>
                 </FilaArchivo>
               ))}
             </div>

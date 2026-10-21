@@ -1,4 +1,5 @@
-/** Fila de un archivo (icono + nombre + detalle) con sus acciones; en móvil las acciones pasan a una segunda línea. */
+/** Fila de un archivo (icono + nombre + detalle) con sus acciones; en móvil las acciones pasan a una segunda línea.
+ *  `pie` es un bloque opcional a todo lo ancho debajo de la fila (p. ej. la confirmación de borrado). */
 const icono = (
   <svg className="w-4 h-4 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -6,7 +7,7 @@ const icono = (
   </svg>
 )
 
-export default function FilaArchivo({ nombre, detalle, children }) {
+export default function FilaArchivo({ nombre, detalle, children, pie }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 py-3">
       <div className="flex items-center gap-3 flex-1 min-w-[14rem]">
@@ -17,6 +18,7 @@ export default function FilaArchivo({ nombre, detalle, children }) {
         </div>
       </div>
       <div className="flex items-center gap-2 flex-wrap pl-11 sm:pl-0">{children}</div>
+      {pie}
     </div>
   )
 }
