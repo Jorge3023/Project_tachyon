@@ -7,6 +7,7 @@ import { useProyectos } from '@/features/proyectos/ProyectosContext'
 import PageHeader from '@/shared/components/PageHeader'
 import FilaArchivo from '@/shared/components/FilaArchivo'
 import Vacio from '@/shared/components/Vacio'
+import useEliminarArchivo from '@/features/archivos/useEliminarArchivo'
 
 function EstadoBadge({ estado }) {
   const map = {
@@ -30,6 +31,8 @@ export default function Archivos() {
     api.get(`/archivos?origen=${origen}`).then(r => setArchivos(r.data)).catch(() => {})
 
   useEffect(() => { cargarLista() }, [origen])
+
+  const { pedir: pedirEliminar, aviso: avisoEliminar } = useEliminarArchivo(async () => { await cargarLista(); recargarProyectos() })
 
   const moverA = async (archivo, valor) => {
     const proyecto_id = valor === '' ? null : Number(valor)
@@ -86,7 +89,7 @@ export default function Archivos() {
             ) : (
               <div className="divide-y divide-gray-50">
                 {archivos.map(a => (
-                  <FilaArchivo key={a.id} nombre={a.nombre}
+                  <FilaArchivo key={a.id} nombre={a.nombre} pie={avisoEliminar(a)}
                     detalle={`${a.filas?.toLocaleString('es-MX') ?? 0} filas`
                       + (a.es_mio ? '' : ` · compartido por ${a.subido_por_nombre || 'otro usuario'}`)
                       + ` · ${new Date(a.subido_en).toLocaleDateString('es-MX')}`
@@ -114,6 +117,9 @@ export default function Archivos() {
                         <button onClick={() => navigate(`/datos/${a.id}`)} className="btn-ghost text-xs">Ver datos</button>
                         <button onClick={() => navigate(`/datos/${a.id}/dashboard`)} className="btn-secondary text-xs">Dashboard</button>
                       </>
+                    )}
+                    {a.es_mio && a.estado !== 'procesando' && (
+                      <button onClick={() => pedirEliminar(a)} className="btn-danger text-xs" aria-label={`Eliminar ${a.nombre}`}>Eliminar</button>
                     )}
                   </FilaArchivo>
                 ))}
