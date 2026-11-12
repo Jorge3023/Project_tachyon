@@ -34,6 +34,15 @@ export function AuthProvider({ children }) {
     return res.data
   }
 
+  // Cambia la contraseña propia. El servidor invalida los tokens anteriores y devuelve uno nuevo.
+  const cambiarPassword = async (actual, nueva) => {
+    const res = await api.post('/auth/password', { actual, nueva })
+    localStorage.setItem('token', res.data.access_token)
+    api.defaults.headers.common['Authorization'] = `Bearer ${res.data.access_token}`
+    setUsuario(res.data.usuario)
+    return res.data.usuario
+  }
+
   const logout = () => {
     localStorage.removeItem('token')
     delete api.defaults.headers.common['Authorization']
@@ -63,7 +72,7 @@ export function AuthProvider({ children }) {
   }, [usuario])
 
   return (
-    <AuthContext.Provider value={{ usuario, login, logout, cargando, actualizarUsuario: setUsuario }}>
+    <AuthContext.Provider value={{ usuario, login, logout, cargando, actualizarUsuario: setUsuario, cambiarPassword }}>
       {children}
     </AuthContext.Provider>
   )

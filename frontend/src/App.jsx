@@ -7,6 +7,7 @@ import AppLayout from '@/shared/components/AppLayout'
 import Cargando from '@/shared/components/Cargando'
 import Login from '@/features/auth/pages/Login'
 import ElegirUsername from '@/features/auth/pages/ElegirUsername'
+import CambiarPassword from '@/features/auth/pages/CambiarPassword'
 import Inicio from '@/features/dashboard/pages/Inicio'
 import Resumen from '@/features/dashboard/pages/Resumen'
 import Archivos from '@/features/archivos/pages/Archivos'
@@ -24,6 +25,8 @@ function Privada({ children, admin = false }) {
   const { usuario, cargando } = useAuth()
   if (cargando) return <Cargando pantalla />
   if (!usuario) return <Navigate to="/" replace />
+  // Contraseña temporal (puesta por el administrador): primero la cambia por una propia
+  if (usuario.necesita_password) return <CambiarPassword />
   // Primer ingreso: antes de ver nada, debe elegir su nombre de usuario
   if (usuario.necesita_username) return <ElegirUsername />
   if (admin && usuario.rol !== 'admin') return <Navigate to="/dashboard" replace />
