@@ -11,7 +11,7 @@ from core.db import get_db
 from core.acceso import proyecto_propio
 from core.seguridad import get_usuario_actual
 from core.acceso import archivo_con_acceso
-from servicios.parquet import (datos_dataset, pagina_parquet, FILAS_POR_GRUPO)
+from servicios.parquet import datos_dataset, pagina_parquet, a_parquet
 
 router = APIRouter(tags=["Datasets"])
 
@@ -59,7 +59,8 @@ def _plantilla_para(conn, u, nombres):
 
 def _analisis(conn, archivo_id, contenido, nombre, u, hoja=None, fila_encabezado=None):
     try:
-        r = detector.leer_archivo(contenido, nombre, hoja=hoja, fila_encabezado=fila_encabezado)
+        r = detector.leer_archivo(contenido, nombre, hoja=hoja, fila_encabezado=fila_encabezado,
+                                  max_filas=MAX_FILAS_DATASET)
     except detector.ArchivoNoSoportado as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
@@ -159,23 +160,28 @@ def confirmar_dataset(archivo_id: int, datos: ConfirmarIn, u=Depends(get_usuario
         if not any(c.rol != "ignorar" for c in datos.columnas):
             raise HTTPException(status_code=422, detail="Deja al menos una columna sin ignorar")
         try:
-            r = detector.leer_archivo(contenido, a["nombre"], hoja=datos.hoja, fila_encabezado=datos.fila_encabezado)
+            r = detector.leer_archivo(contenido, a["nombre"], hoja=datos.hoja, fila_encabezado=datos.fila_encabezado,
+                                      max_filas=MAX_FILAS_DATASET)
+        except detector.ArchivoNoSoportado as e:
+            raise HTTPException(status_code=422, detail=str(e))
         except Exception as e:
             raise HTTPException(status_code=422, detail=f"No se pudo leer el archivo: {e}")
-        df0 = r["df"]
+        del contenido
+        df0 = r.pop("df")
+        if len(df0) > MAX_FILAS_DATASET:
+            raise HTTPException(status_code=422, detail=f"El archivo tiene {len(df0):,} filas (máximo {MAX_FILAS_DATASET:,}).")
         columnas = [{"nombre": c.nombre, "rol": c.rol, "nombre_mostrar": (c.nombre_mostrar or "").strip() or c.nombre}
                     for c in datos.columnas if c.nombre in df0.columns]
         limpio = detector.aplicar_esquema(df0, columnas)
+        del df0                                   # la tabla cruda ya no hace falta: se libera antes de escribir el Parquet
         if limpio.empty:
             raise HTTPException(status_code=422, detail="Después de limpiar no quedaron datos")
         # esquema final con los nombres ya únicos que quedaron en el DataFrame limpio
         activas = [c for c in columnas if c["rol"] != "ignorar"]
         esquema = [{"nombre": nombre_final, "rol": c["rol"], "origen": c["nombre"]}
                    for nombre_final, c in zip(limpio.columns, activas)]
-        buf = io.BytesIO()
         # Grupos de filas de tamaño fijo: así "Ver datos" puede leer solo la página que se pide
-        limpio.to_parquet(buf, engine="pyarrow", compression="zstd", index=False, row_group_size=FILAS_POR_GRUPO)
-        storage.put(f"datasets/{archivo_id}.parquet", buf.getvalue(), "application/octet-stream")
+        storage.put(f"datasets/{archivo_id}.parquet", a_parquet(limpio), "application/octet-stream")
         try:
             hf = detector.huella([c["nombre"] for c in columnas])
             # El resumen por columna se calcula una sola vez, aquí, y se guarda (es pequeño)

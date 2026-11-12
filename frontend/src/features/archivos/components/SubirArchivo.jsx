@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import api from '@/shared/api'
+import api, { ESPERA_ARCHIVOS } from '@/shared/api'
 import ModalRevisarColumnas from './ModalRevisarColumnas'
 
 /* Tarjeta para subir cualquier Excel/CSV: sube, analiza las columnas y abre la pantalla de revisión.
@@ -22,7 +22,7 @@ export default function SubirArchivo({ proyectoId = null, onGuardado }) {
     const formData = new FormData()
     formData.append('file', file)
     try {
-      const r = await api.post('/datasets/analizar', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
+      const r = await api.post('/datasets/analizar', formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: ESPERA_ARCHIVOS })
       setAnalisis(r.data)
     } catch (err) {
       setMensaje({ tipo: 'error', texto: err.response?.data?.detail || 'No se pudo leer el archivo' })

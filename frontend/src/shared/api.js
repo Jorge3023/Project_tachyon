@@ -7,6 +7,9 @@ const api = axios.create({
   timeout: 30000,
 })
 
+// Subir y procesar un archivo grande tarda más que una consulta normal: esas peticiones esperan hasta 5 minutos.
+export const ESPERA_ARCHIVOS = 5 * 60 * 1000
+
 api.interceptors.response.use(
   res => res,
   err => {

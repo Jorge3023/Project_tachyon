@@ -32,6 +32,21 @@ def parquet_bytes(archivo_id):
                 _PARQUET_CACHE.popitem(last=False)
     return datos
 
+def a_parquet(df) -> bytes:
+    """DataFrame limpio -> bytes de Parquet (zstd, grupos de FILAS_POR_GRUPO filas).
+    Se escribe por tramos: convertir toda la tabla de una vez duplicaba los datos en memoria."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    esquema = pa.Schema.from_pandas(df, preserve_index=False)
+    buf = io.BytesIO()
+    tramo = FILAS_POR_GRUPO * 5
+    with pq.ParquetWriter(buf, esquema, compression="zstd") as w:
+        for ini in range(0, max(len(df), 1), tramo):
+            tabla = pa.Table.from_pandas(df.iloc[ini:ini + tramo], schema=esquema, preserve_index=False)
+            w.write_table(tabla, row_group_size=FILAS_POR_GRUPO)
+    return buf.getvalue()
+
+
 def esquema_dataset(a):
     """Esquema (columnas confirmadas) de un dataset procesado; 404 si no está disponible."""
     esquema = json.loads(a["esquema_json"] or "{}").get("columnas", [])

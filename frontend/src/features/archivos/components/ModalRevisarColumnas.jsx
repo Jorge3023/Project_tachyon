@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import api from '@/shared/api'
+import api, { ESPERA_ARCHIVOS } from '@/shared/api'
 
 const ETIQUETA_ROL = {
   fecha: 'Fecha',
@@ -28,7 +28,7 @@ export default function ModalRevisarColumnas({ analisis: inicial, proyectoId = n
       const params = new URLSearchParams()
       if (hoja) params.set('hoja', hoja)
       if (fila1 !== null) params.set('fila_encabezado', String(Math.max(0, fila1 - 1)))
-      const r = await api.get(`/datasets/${analisis.archivo_id}/analisis?${params}`)
+      const r = await api.get(`/datasets/${analisis.archivo_id}/analisis?${params}`, { timeout: ESPERA_ARCHIVOS })
       setAnalisis(r.data); setCols(r.data.columnas); setFilaEnc(r.data.fila_encabezado + 1)
     } catch (e) {
       setError(e.response?.data?.detail || 'No se pudo volver a leer el archivo')
@@ -48,7 +48,7 @@ export default function ModalRevisarColumnas({ analisis: inicial, proyectoId = n
         hoja: analisis.hoja, fila_encabezado: analisis.fila_encabezado,
         columnas: cols.map(c => ({ nombre: c.nombre, rol: c.rol, nombre_mostrar: c.nombre_mostrar })),
         guardar_plantilla: guardarPlantilla, nombre_plantilla: nombrePlantilla, proyecto_id: proyectoId,
-      })
+      }, { timeout: ESPERA_ARCHIVOS })
       onGuardado(r.data)
     } catch (e) {
       setError(e.response?.data?.detail || 'No se pudo guardar')
