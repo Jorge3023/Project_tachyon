@@ -17,6 +17,8 @@ export default function Usuarios() {
   const [trabajando, setTrabajando] = useState(false)
   const [aviso, setAviso] = useState(null)
   const [borrando, setBorrando] = useState(null)   // id de la cuenta que espera confirmación
+  const [restableciendo, setRestableciendo] = useState(null)   // id de la cuenta a la que se le pone contraseña temporal
+  const [temporal, setTemporal] = useState('')
 
   const cargar = () => api.get('/usuarios').then(r => setLista(r.data)).catch(() => {})
   useEffect(() => { cargar() }, [])
@@ -26,7 +28,7 @@ export default function Usuarios() {
     setMsg(null); setTrabajando(true)
     try {
       await api.post('/usuarios', { correo, password, rol })
-      setMsg({ tipo: 'ok', texto: `Cuenta creada para ${correo.trim().toLowerCase()}. Entrégale el correo y la contraseña; elegirá su nombre de usuario al entrar.` })
+      setMsg({ tipo: 'ok', texto: `Cuenta creada para ${correo.trim().toLowerCase()}. Entrégale el correo y la contraseña temporal; al entrar deberá cambiarla y elegir su nombre de usuario.` })
       setCorreo(''); setPassword('')
       cargar()
     } catch (err) {
@@ -40,6 +42,18 @@ export default function Usuarios() {
       cargar()
     } catch (err) {
       setMsg({ tipo: 'error', texto: err.response?.data?.detail || 'No se pudo cambiar el estado' })
+    }
+  }
+
+  const restablecer = async (e, u) => {
+    e.preventDefault()
+    setAviso(null)
+    try {
+      await api.post(`/usuarios/${u.id}/password`, { password: temporal })
+      setRestableciendo(null); setTemporal(''); cargar()
+      setAviso({ tipo: 'ok', texto: `Contraseña temporal guardada para ${u.username || u.correo}. Se cerraron sus sesiones; al entrar deberá elegir una nueva.` })
+    } catch (err) {
+      setAviso({ tipo: 'error', texto: err.response?.data?.detail || 'No se pudo restablecer la contraseña' })
     }
   }
 
@@ -116,15 +130,32 @@ export default function Usuarios() {
                   </div>
                   <div className="flex items-center gap-2 flex-wrap pl-[3.25rem] sm:pl-0">
                     {u.pendiente_username && <span className="badge-warn">Pendiente de primer ingreso</span>}
+                    {u.pendiente_password && !u.pendiente_username && <span className="badge-warn">Contraseña temporal</span>}
                     <span className={u.activo ? 'badge-good' : 'badge-bad'}>{u.activo ? 'Activo' : 'Desactivado'}</span>
-                    {u.id !== usuario?.id && borrando !== u.id && (
+                    {u.id !== usuario?.id && borrando !== u.id && restableciendo !== u.id && (
                       <>
+                        <button onClick={() => { setAviso(null); setTemporal(''); setRestableciendo(u.id) }} className="btn-ghost text-xs" aria-label={`Restablecer la contraseña de ${u.username || u.correo}`}>Restablecer contraseña</button>
                         <button onClick={() => alternar(u)} className="btn-ghost text-xs">{u.activo ? 'Desactivar' : 'Activar'}</button>
                         <button onClick={() => { setAviso(null); setBorrando(u.id) }} className="btn-danger text-xs" aria-label={`Eliminar la cuenta de ${u.username || u.correo}`}>Eliminar</button>
                       </>
                     )}
                   </div>
                 </div>
+                {restableciendo === u.id && (
+                  <form onSubmit={(e) => restablecer(e, u)} className="mt-3 rounded-lg bg-gray-50 border border-gray-100 px-4 py-3 flex flex-wrap items-end gap-3">
+                    <div className="flex-1 min-w-[14rem]">
+                      <label className="block text-xs text-gray-600 mb-1.5" htmlFor={`temporal-${u.id}`}>
+                        Contraseña temporal para <strong>{u.username || u.correo}</strong> (mín. 8)
+                      </label>
+                      <input id={`temporal-${u.id}`} type="text" className="input" value={temporal} onChange={e => setTemporal(e.target.value)}
+                        minLength={8} maxLength={72} required autoComplete="off" autoFocus />
+                    </div>
+                    <div className="flex gap-2">
+                      <button type="button" className="btn-secondary text-xs" onClick={() => setRestableciendo(null)}>Cancelar</button>
+                      <button type="submit" className="btn-primary text-xs" disabled={temporal.length < 8}>Guardar</button>
+                    </div>
+                  </form>
+                )}
                 {borrando === u.id && (
                   <div role="alertdialog" aria-label="Confirmar eliminación" className="mt-3 rounded-lg bg-red-50 border border-red-100 px-4 py-3 flex flex-wrap items-center gap-3">
                     <p className="text-xs text-red-800 flex-1 min-w-[16rem]">
