@@ -88,7 +88,8 @@ export default function Exportar() {
       .then(r => {
         if (!vivo) return
         const mismaVista = desdeEditor && (desdeEditor.vista ?? null) === (r.data.vista.guardada ? r.data.vista.id : null)
-        setInfo(r.data); setConfig(mismaVista ? desdeEditor.config : r.data.config)
+        // Se exporta lo que se veía: incluidos los filtros con los que se estaba explorando (configVer)
+        setInfo(r.data); setConfig(mismaVista ? (desdeEditor.configVer || desdeEditor.config) : r.data.config)
       })
       .catch(e => vivo && setError(typeof e?.response?.data?.detail === 'string' ? e.response.data.detail : 'No se pudo abrir el dashboard'))
     return () => { vivo = false }

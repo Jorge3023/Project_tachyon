@@ -59,7 +59,7 @@ export default function Archivos() {
 
         <main className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5">
 
-          <SubirArchivo onGuardado={() => { cargarLista(); recargarProyectos() }} />
+          <SubirArchivo onGuardado={(r) => { cargarLista(); recargarProyectos() ; if (r?.archivo_id) navigate(`/datos/${r.archivo_id}/dashboard`, { state: { aviso: r.mensaje } }) }} />
 
           {/* ── Historial ── */}
           <div className="card">

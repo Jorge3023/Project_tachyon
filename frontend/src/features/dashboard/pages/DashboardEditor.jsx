@@ -19,7 +19,7 @@ function Esqueleto({ alto = 200 }) {
   return <div className="animate-pulse bg-gray-100 rounded-lg" style={{ height: alto }} aria-label="Cargando gráfica" />
 }
 
-function Tarjeta({ widget, datos, metricas, cargando, editando, seleccionada, levantada, refTarjeta, onAsa, onTecladoAsa, onSeleccionar, onDuplicar, onEliminar }) {
+function Tarjeta({ widget, datos, metricas, cargando, editando, seleccionada, levantada, refTarjeta, onAsa, onTecladoAsa, onSeleccionar, onDuplicar, onEliminar, onElegir, elegido }) {
   const [verTabla, setVerTabla] = useState(false)
   const esKpi = widget.tipo === 'kpi'
   const sub = subtituloWidget(widget, metricas)
@@ -72,7 +72,7 @@ function Tarjeta({ widget, datos, metricas, cargando, editando, seleccionada, le
           : datos.error ? <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{datos.error}</p>
           : vacio(widget, datos) ? <p className="text-xs text-gray-400 py-8 text-center">Sin datos con los filtros actuales.</p>
           : verTabla ? <TablaAlternativa widget={widget} datos={datos} />
-          : <div className={cargando ? 'opacity-60 transition-opacity' : 'transition-opacity'}><Grafica widget={widget} datos={datos} /></div>}
+          : <div className={cargando ? 'opacity-60 transition-opacity' : 'transition-opacity'}><Grafica widget={widget} datos={datos} onElegir={onElegir} elegido={elegido} /></div>}
       </div>
       <Notas widget={widget} datos={datos} />
     </section>
@@ -97,6 +97,13 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
   const [editando, setEditando] = useState(false)
   const [sel, setSel] = useState(null)
   const [agregando, setAgregando] = useState(false)
+  // Explorar: filtros y granularidad que se aplican al vuelo y NO cambian la vista guardada (no piden «Guardar»).
+  // Los filtros con _origen salen de un clic en una gráfica: filtran a las demás, no a la que se pulsó.
+  const [explorar, setExplorar] = useState([])
+  const [granoExp, setGranoExp] = useState(null)
+  // Al llegar desde «Subir archivo» se muestra el resultado (filas guardadas, valores no leídos)
+  const [bienvenida, setBienvenida] = useState(location.state?.aviso || '')
+  useEffect(() => { if (location.state?.aviso) window.history.replaceState({}, '') }, [location.state])
   const [nombrando, setNombrando] = useState(null)   // 'nueva' | 'renombrar' | null
   const [nombre, setNombre] = useState('')
   const [guardando, setGuardando] = useState(false)
@@ -113,7 +120,7 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
       pendiente.current = null
       const retomar = p && (p.vista ?? null) === (r.data.vista.guardada ? r.data.vista.id : null)
       setInfo(r.data); setConfig(retomar ? p.configPendiente : r.data.config); base.current = JSON.stringify(r.data.config)
-      setResultado(null); setSel(null)
+      setResultado(null); setSel(null); setExplorar([]); setGranoExp(null)
     } catch (e) { setError(msg(e, 'No se pudo abrir el dashboard')) }
   }, [id])
   useEffect(() => { setInfo(null); setEditando(false); cargar(vistaInicial ?? pendiente.current?.vista ?? undefined) }, [cargar, vistaInicial])
@@ -125,15 +132,44 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
   const columnasEd = useMemo(() => columnasConMetricas(columnas, metricas), [columnas, metricas])
   const usos = useMemo(() => Object.fromEntries(metricas.map(m => [m.nombre, (config?.widgets || []).filter(w => w.medida === m.nombre).length])), [config, metricas])
 
+  // Lo que se calcula = la vista + lo que se está explorando
+  const configVer = useMemo(() => {
+    if (!config || (!explorar.length && !granoExp)) return config
+    const quitar = ({ _origen, ...f }) => f
+    const globales = explorar.filter(f => !f._origen).map(quitar)
+    const porClic = explorar.filter(f => f._origen)
+    return {
+      ...config, grano: granoExp || config.grano, filtros: [...config.filtros, ...globales].slice(0, 8),
+      widgets: porClic.length
+        ? config.widgets.map(w => ({ ...w, filtros: [...(w.filtros || []), ...porClic.filter(f => f._origen !== w.id).map(quitar)].slice(0, 8) }))
+        : config.widgets,
+    }
+  }, [config, explorar, granoExp])
+  // Clic en una categoría: filtra por ella (otro clic en la misma la quita). Una sola selección por columna.
+  const elegir = useCallback((origen) => (col, valor) => setExplorar(ex => {
+    const previo = ex.find(f => f.col === col && f._origen)
+    const resto = ex.filter(f => f.col !== col)
+    if (previo && previo._origen === origen && previo.valores?.length === 1 && previo.valores[0] === valor) return resto
+    return [...resto, { col, valores: [valor], _origen: origen }]
+  }), [])
+  const elegidoEn = (w) => explorar.find(f => f._origen === w.id && f.col === w.x)?.valores?.[0]
+  const granoActual = editando ? config?.grano : (granoExp || config?.grano)
+  const cambiarGrano = (g) => (editando ? setConfig(c => ({ ...c, grano: g })) : setGranoExp(g === config.grano ? null : g))
+  const fijarExploracion = () => {
+    const limpios = explorar.map(({ _origen, ...f }) => f)
+    setConfig(c => ({ ...c, grano: granoExp || c.grano, filtros: [...c.filtros, ...limpios].slice(0, 8) }))
+    setExplorar([]); setGranoExp(null)
+  }
+
   // Recalcula (con retraso corto) cada vez que cambia la configuración
   const cuenta = useRef(0)
   useEffect(() => {
-    if (!config) return
+    if (!configVer) return
     const n = ++cuenta.current
     setCalculando(true)
     const t = setTimeout(async () => {
       try {
-        const r = await api.post(`/datasets/${id}/dashboard/datos`, { config })
+        const r = await api.post(`/datasets/${id}/dashboard/datos`, { config: configVer })
         if (n !== cuenta.current) return
         setResultado(r.data); setErrorCalc('')
       } catch (e) {
@@ -141,7 +177,7 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
       } finally { if (n === cuenta.current) setCalculando(false) }
     }, resultado ? 350 : 0)
     return () => clearTimeout(t)
-  }, [config, id])
+  }, [configVer, id])
 
   useEffect(() => {
     if (!sucio) return
@@ -299,61 +335,91 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
                   <button className="btn-primary text-xs py-1.5" onClick={guardar} disabled={guardando}>{guardando ? 'Guardando…' : 'Guardar'}</button>
                 </>
               )}
-              {sucio && !esMio && <button className="btn-ghost text-xs" onClick={descartar}>Restablecer filtros</button>}
-              <button type="button" onClick={alternarPrincipal} aria-pressed={esPrincipal}
+
+              <button type="button" onClick={alternarPrincipal} aria-pressed={esPrincipal} aria-label={esPrincipal ? 'Principal' : 'Hacer principal'}
                 title={esPrincipal ? 'Es tu dashboard principal; clic para quitarlo' : 'Mostrar este dashboard al entrar'}
                 className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors flex items-center gap-1.5 whitespace-nowrap ` +
                   (esPrincipal ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300')}>
-                <span aria-hidden="true">{esPrincipal ? '★' : '☆'}</span>{esPrincipal ? 'Principal' : 'Hacer principal'}
+                <span aria-hidden="true">{esPrincipal ? '★' : '☆'}</span><span className="hidden sm:inline">{esPrincipal ? 'Principal' : 'Hacer principal'}</span>
               </button>
               {esMio && editando && (
                 <button className="btn-secondary text-xs" onClick={() => setAgregando(true)}>+ Agregar gráfica</button>
               )}
               {esMio && (
-                <button type="button" onClick={() => { setEditando(e => !e); setSel(null) }} aria-pressed={editando}
-                  className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ` +
+                <button type="button" onClick={() => { setEditando(e => !e); setSel(null); setExplorar([]); setGranoExp(null) }} aria-pressed={editando}
+                  className={`hidden md:inline-flex text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ` +
                     (editando ? 'bg-brand-600 border-brand-600 text-white' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300')}>
                   {editando ? 'Terminar edición' : 'Modo edición'}
                 </button>
               )}
               <button type="button" className="btn-secondary text-xs" title="Descargar como imagen, PDF, PowerPoint, Excel o CSV"
-                onClick={() => navigate(`/datos/${id}/exportar${vistaActual ? `?vista=${vistaActual}` : ''}`, { state: { config, vista: vistaActual } })}>
+                aria-label="Exportar"
+                onClick={() => navigate(`/datos/${id}/exportar${vistaActual ? `?vista=${vistaActual}` : ''}`, { state: { config, configVer, vista: vistaActual } })}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" /></svg>
-                Exportar
+                <span className="hidden sm:inline">Exportar</span>
               </button>
               <Link to={`/datos/${id}`} className="btn-ghost text-xs">Ver datos</Link>
           </>} />
 
         {/* Filtros globales */}
-        <div className="bg-white border-b border-gray-100 px-4 md:px-6 py-2.5 flex items-start gap-4 flex-wrap">
-          <div className="flex-1 min-w-[240px]">
-            <ListaFiltros archivoId={id} columnas={columnas} filtros={config.filtros} onChange={f => setConfig(c => ({ ...c, filtros: f }))} />
+        <div className="bg-white border-b border-gray-100 px-4 md:px-6 py-2 md:py-2.5 flex items-start gap-x-4 gap-y-2 flex-wrap">
+          <div className="flex-1 min-w-[200px]">
+            {editando
+              ? <>
+                  <p className="text-[11px] text-gray-500 mb-1">Filtros de la vista (se guardan con ella)</p>
+                  <ListaFiltros archivoId={id} columnas={columnas} filtros={config.filtros} onChange={f => setConfig(c => ({ ...c, filtros: f }))} />
+                </>
+              : <>
+                  <ListaFiltros archivoId={id} columnas={columnas} filtros={explorar} onChange={setExplorar} />
+                  {config.filtros.length > 0 && (
+                    <p className="text-[11px] text-gray-400 mt-1">Esta vista ya filtra por {config.filtros.map(f => f.col).join(', ')}.</p>
+                  )}
+                </>}
           </div>
           {tieneFechas && (
-            <div role="group" aria-label="Granularidad de fechas" className="flex bg-gray-100 rounded-lg p-0.5">
-              {GRANOS.map(g => (
-                <button key={g.v} type="button" aria-pressed={config.grano === g.v} onClick={() => setConfig(c => ({ ...c, grano: g.v }))}
-                  className={`px-2.5 py-1 rounded-md text-xs font-medium ${config.grano === g.v ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>{g.l}</button>
-              ))}
-            </div>
+            <>
+              <div role="group" aria-label="Granularidad de fechas" className="hidden sm:flex bg-gray-100 rounded-lg p-0.5">
+                {GRANOS.map(g => (
+                  <button key={g.v} type="button" aria-pressed={granoActual === g.v} onClick={() => cambiarGrano(g.v)}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium ${granoActual === g.v ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>{g.l}</button>
+                ))}
+              </div>
+              <select className="sm:hidden text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white" aria-label="Agrupar fechas por"
+                value={granoActual} onChange={e => cambiarGrano(e.target.value)}>
+                {GRANOS.map(g => <option key={g.v} value={g.v}>{g.v === 'auto' ? 'Fechas: auto' : `Por ${g.l.toLowerCase()}`}</option>)}
+              </select>
+            </>
           )}
           {resultado && (
             <p className="text-xs text-gray-400 py-1.5 whitespace-nowrap" aria-live="polite">
               {resultado.filas_filtradas === resultado.filas_total ? `${fmtNum(resultado.filas_total)} filas` : `${fmtNum(resultado.filas_filtradas)} de ${fmtNum(resultado.filas_total)} filas`}
             </p>
           )}
+          {!editando && (explorar.length > 0 || granoExp) && (
+            <div className="w-full flex items-center gap-2 flex-wrap text-xs">
+              <span className="text-gray-500">Explorando: no cambia la vista guardada.</span>
+              <button type="button" className="btn-ghost text-xs py-1" onClick={() => { setExplorar([]); setGranoExp(null) }}>Quitar filtros</button>
+              {esMio && <button type="button" className="btn-ghost text-xs py-1" onClick={fijarExploracion}>Guardar en la vista</button>}
+            </div>
+          )}
         </div>
 
         <main className="md:flex-1 md:overflow-y-auto p-4 md:p-6">
           {errorCalc && <p role="alert" className="mb-4 text-sm text-red-700 bg-red-50 rounded-lg px-4 py-2.5">{errorCalc}</p>}
-          {!info.vista.guardada && (
+          {bienvenida && (
+            <div role="status" className="mb-4 text-xs text-green-800 bg-green-50 rounded-lg px-4 py-2.5 flex items-start gap-3">
+              <p className="flex-1">{bienvenida} Esta es la propuesta automática; haz clic en una barra o porción para filtrar.</p>
+              <button type="button" onClick={() => setBienvenida('')} aria-label="Cerrar aviso" className="text-green-700 hover:text-green-900">✕</button>
+            </div>
+          )}
+          {!info.vista.guardada && !bienvenida && (
             <p className="mb-4 text-xs text-gray-600 bg-brand-50 rounded-lg px-4 py-2.5">
               {esMio
-                ? 'Propuesta automática según el tipo de cada columna. Entra a «Modo edición» para ajustarla y guárdala para conservarla.'
+                ? <>Propuesta automática según el tipo de cada columna.<span className="hidden md:inline"> Entra a «Modo edición» para ajustarla y guárdala para conservarla.</span></>
                 : 'Propuesta automática según las columnas del archivo.'}
             </p>
           )}
-          {!esMio && <p className="mb-4 text-xs text-gray-500">Compartido contigo en solo lectura. Puedes filtrar para explorar; los cambios no se guardan.</p>}
+          {!esMio && <p className="mb-4 text-xs text-gray-500">Compartido contigo en solo lectura. Puedes filtrar para explorar.</p>}
           {info.avisos?.length > 0 && (
             <div role="status" className="mb-4 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-4 py-2.5">
               <p className="font-medium">Esta vista se ajustó porque cambiaron las columnas del archivo{esMio ? '; guárdala para conservarla así' : ''}:</p>
@@ -367,16 +433,17 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
               {esMio && <button className="btn-primary mx-auto mt-3 text-xs" onClick={() => { setEditando(true); setAgregando(true) }}>Agregar la primera gráfica</button>}
             </div>
           ) : (
-            <div ref={tablero.rejilla} className="grid grid-cols-12 gap-4">
+            <div ref={tablero.rejilla} className="grid grid-cols-12 gap-3 md:gap-4">
               {config.widgets.map(w => {
                 const levantada = tablero.arrastrando === w.id
                 return (
                   <div key={w.id} id={`w-${w.id}`} ref={tablero.caja(w.id)}
-                    className={`relative flex col-span-12 ${CLASE_ANCHO[w.ancho] || CLASE_ANCHO[6]} ${levantada ? 'z-30' : ''}`}>
+                    className={`relative flex ${w.tipo === 'kpi' ? 'col-span-6' : 'col-span-12'} ${CLASE_ANCHO[w.ancho] || CLASE_ANCHO[6]} ${levantada ? 'z-30' : ''}`}>
                     {levantada && <div aria-hidden="true" className="absolute inset-0 rounded-xl border-2 border-dashed border-brand-300 bg-brand-50/60" />}
                     <Tarjeta widget={w} datos={resultado?.widgets?.[w.id]} metricas={metricas} cargando={calculando} editando={editando} seleccionada={sel === w.id}
                       levantada={levantada} refTarjeta={tablero.tarjeta(w.id)} onAsa={e => tablero.iniciar(e, w.id)} onTecladoAsa={tecladoAsa(w.id)}
-                      onSeleccionar={() => setSel(w.id)} onDuplicar={() => duplicar(w.id)} onEliminar={() => eliminar(w.id)} />
+                      onSeleccionar={() => setSel(w.id)} onDuplicar={() => duplicar(w.id)} onEliminar={() => eliminar(w.id)}
+                      onElegir={editando ? undefined : elegir(w.id)} elegido={editando ? undefined : elegidoEn(w)} />
                   </div>
                 )
               })}

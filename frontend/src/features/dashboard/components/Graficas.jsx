@@ -47,7 +47,7 @@ export function Kpi({ widget, datos }) {
   const grano = d?.grano || (widget.grano === 'auto' ? 'mes' : widget.grano)
   return (
     <div>
-      <p className="text-3xl font-semibold tracking-tight tabular-nums" style={{ color: TINTA.primaria }}
+      <p className="text-2xl sm:text-3xl font-semibold tracking-tight tabular-nums" style={{ color: TINTA.primaria }}
         title={datos.valor === null ? '' : fmtValor(datos.valor, datos.formato)}>
         {fmtValor(datos.valor, datos.formato, 'cifra')}
       </p>
@@ -129,7 +129,11 @@ export function LineaArea({ widget, datos }) {
   )
 }
 
-export function Barras({ widget, datos }) {
+// Clic en una barra, porción o fila de Pareto → filtra el resto del tablero por esa categoría.
+// `elegido` es el valor ya filtrado: se resalta y lo demás se atenúa. «Otros» no se puede elegir (agrupa varias).
+const elegible = (v) => v !== undefined && v !== null && v !== 'Otros'
+
+export function Barras({ widget, datos, onElegir, elegido }) {
   const data = datosCategorias(datos)
   const horiz = widget.orientacion === 'h'
   const multi = datos.series.length > 1
@@ -137,6 +141,9 @@ export function Barras({ widget, datos }) {
   const largo = Math.max(...datos.categorias.map(c => String(c).length), 0)
   const ejeV = v => fmtValor(v, datos.formato, 'compacto')
   const ultimo = datos.parcial ? datos.categorias.length - 1 : -1      // barra del periodo incompleto: más tenue
+  const clic = onElegir && !datos.grano ? (e) => { const c = e?.payload?.c ?? e?.c; if (elegible(c)) onElegir(widget.x, c) } : undefined
+  const opacidad = (i) => (i === ultimo ? 0.4 : 1) * (elegido !== undefined && data[i]?.c !== elegido ? 0.35 : 1)
+  const conCeldas = ultimo >= 0 || elegido !== undefined
   return (
     <>
       <ResponsiveContainer width="100%" height={horiz ? Math.max(ALTO, datos.categorias.length * 30 + 30) : ALTO}>
@@ -160,8 +167,9 @@ export function Barras({ widget, datos }) {
             <Bar key={j} dataKey={`s${j}`} fill={colorSerie(j, s.nombre, multi ? null : widget.color ?? 0)} maxBarSize={24}
               stackId={apilado ? 'a' : undefined}
               stroke={apilado ? TINTA.superficie : 'none'} strokeWidth={apilado ? 2 : 0}
-              radius={apilado ? 0 : horiz ? [0, 4, 4, 0] : [4, 4, 0, 0]} isAnimationActive={false}>
-              {ultimo >= 0 && data.map((_, i) => <Cell key={i} fillOpacity={i === ultimo ? 0.4 : 1} />)}
+              radius={apilado ? 0 : horiz ? [0, 4, 4, 0] : [4, 4, 0, 0]} isAnimationActive={false}
+              onClick={clic} cursor={clic ? 'pointer' : undefined}>
+              {conCeldas && data.map((_, i) => <Cell key={i} fillOpacity={opacidad(i)} />)}
             </Bar>
           ))}
         </BarChart>
@@ -172,15 +180,18 @@ export function Barras({ widget, datos }) {
 }
 
 /* ── Circular ───────────────────────────────────────────────────────────────── */
-export function Dona({ widget, datos }) {
+export function Dona({ widget, datos, onElegir, elegido }) {
   const partes = datos.partes
+  const clic = onElegir ? (nombre) => { if (elegible(nombre)) onElegir(widget.x, nombre) } : null
+  const tenue = (n) => elegido !== undefined && n !== elegido
   return (
     <div className="flex items-center gap-4 flex-wrap justify-center">
       <div className="relative" style={{ width: 170, height: 170 }}>
         <PieChart width={170} height={170}>
           <Pie data={partes} dataKey="valor" nameKey="nombre" innerRadius={55} outerRadius={82} paddingAngle={partes.length > 1 ? 2 : 0}
-            stroke={TINTA.superficie} strokeWidth={2} isAnimationActive={false}>
-            {partes.map((p, i) => <Cell key={p.nombre} fill={colorSerie(i, p.nombre)} />)}
+            stroke={TINTA.superficie} strokeWidth={2} isAnimationActive={false}
+            onClick={clic ? (e) => clic(e?.payload?.nombre ?? e?.name) : undefined} cursor={clic ? 'pointer' : undefined}>
+            {partes.map((p, i) => <Cell key={p.nombre} fill={colorSerie(i, p.nombre)} fillOpacity={tenue(p.nombre) ? 0.3 : 1} />)}
           </Pie>
           <Tooltip content={({ active, payload }) => active && payload?.length
             ? <CajaTooltip titulo={payload[0].payload.nombre} filas={[{ nombre: 'Valor', valor: fmtValor(payload[0].payload.valor, datos.formato) }, { nombre: 'Participación', valor: `${fmtNum(payload[0].payload.pct)} %` }]} /> : null} />
@@ -191,20 +202,28 @@ export function Dona({ widget, datos }) {
         </div>
       </div>
       <ul className="text-xs space-y-1.5 min-w-[130px] flex-1">
-        {partes.map((p, i) => (
-          <li key={p.nombre} className="flex items-center gap-2">
-            <span className="inline-block w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: colorSerie(i, p.nombre) }} />
+        {partes.map((p, i) => {
+          const contenido = <>
+            <span className="inline-block w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: colorSerie(i, p.nombre), opacity: tenue(p.nombre) ? 0.3 : 1 }} />
             <span className="truncate" style={{ color: TINTA.secundaria }} title={p.nombre}>{p.nombre}</span>
             <span className="ml-auto tabular-nums font-medium" style={{ color: TINTA.primaria }}>{fmtNum(p.pct)} %</span>
-          </li>
-        ))}
+          </>
+          return (
+            <li key={p.nombre}>
+              {clic && elegible(p.nombre)
+                ? <button type="button" onClick={() => clic(p.nombre)} aria-pressed={elegido === p.nombre}
+                    className="w-full flex items-center gap-2 text-left rounded hover:bg-gray-50 -mx-1 px-1">{contenido}</button>
+                : <div className="flex items-center gap-2">{contenido}</div>}
+            </li>
+          )
+        })}
       </ul>
     </div>
   )
 }
 
 /* ── Pareto: ranking con el acumulado como etiqueta (un solo eje) ──────────────── */
-export function Pareto({ widget, datos }) {
+export function Pareto({ widget, datos, onElegir, elegido }) {
   const max = Math.max(...datos.valores, 0) || 1
   const col = PALETA[widget.color ?? 0]
   return (
@@ -213,16 +232,25 @@ export function Pareto({ widget, datos }) {
         <span className="flex-1">Categoría</span><span className="w-20 text-right">Valor</span><span className="w-16 text-right">Acumulado</span>
       </div>
       <ol className="space-y-1.5">
-        {datos.categorias.map((c, i) => (
-          <li key={c} className="flex items-center gap-3 text-xs">
+        {datos.categorias.map((c, i) => {
+          const fila = <>
             <span className="w-24 truncate flex-shrink-0" style={{ color: TINTA.secundaria }} title={c}>{c}</span>
             <span className="flex-1 h-4 rounded-r" style={{ background: '#f0efec' }}>
-              <span className="block h-full" style={{ width: `${(datos.valores[i] / max) * 100}%`, background: col, borderRadius: '0 4px 4px 0', minWidth: 2 }} />
+              <span className="block h-full" style={{ width: `${(datos.valores[i] / max) * 100}%`, background: col, borderRadius: '0 4px 4px 0', minWidth: 2,
+                opacity: elegido !== undefined && c !== elegido ? 0.35 : 1 }} />
             </span>
             <span className="w-20 text-right tabular-nums whitespace-nowrap" style={{ color: TINTA.primaria }}>{fmtValor(datos.valores[i], datos.formato, 'compacto')}</span>
             <span className="w-16 text-right tabular-nums whitespace-nowrap" style={{ color: TINTA.secundaria }}>{fmtValor(datos.acumulado[i], 'porcentaje', 'compacto')}</span>
-          </li>
-        ))}
+          </>
+          return (
+            <li key={c}>
+              {onElegir && elegible(c)
+                ? <button type="button" onClick={() => onElegir(widget.x, c)} aria-pressed={elegido === c}
+                    className="w-full flex items-center gap-3 text-xs text-left rounded hover:bg-gray-50">{fila}</button>
+                : <div className="flex items-center gap-3 text-xs">{fila}</div>}
+            </li>
+          )
+        })}
       </ol>
     </div>
   )
@@ -408,13 +436,13 @@ export function vacio(widget, datos) {
   }
 }
 
-export function Grafica({ widget, datos }) {
+export function Grafica({ widget, datos, onElegir, elegido }) {
   switch (widget.tipo) {
     case 'kpi': return <Kpi widget={widget} datos={datos} />
     case 'linea': case 'area': return <LineaArea widget={widget} datos={datos} />
-    case 'barras': return <Barras widget={widget} datos={datos} />
-    case 'dona': return <Dona widget={widget} datos={datos} />
-    case 'pareto': return <Pareto widget={widget} datos={datos} />
+    case 'barras': return <Barras widget={widget} datos={datos} onElegir={onElegir} elegido={elegido} />
+    case 'dona': return <Dona widget={widget} datos={datos} onElegir={onElegir} elegido={elegido} />
+    case 'pareto': return <Pareto widget={widget} datos={datos} onElegir={onElegir} elegido={elegido} />
     case 'dispersion': return <Dispersion widget={widget} datos={datos} />
     case 'histograma': return <Histograma widget={widget} datos={datos} />
     case 'calor': return <MapaCalor widget={widget} datos={datos} />
