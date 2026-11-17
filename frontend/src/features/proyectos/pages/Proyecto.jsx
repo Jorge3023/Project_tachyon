@@ -82,7 +82,7 @@ export default function Proyecto() {
         )} />
 
       <main className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5">
-        <SubirArchivo proyectoId={Number(id)} onGuardado={() => { cargar(); recargar() }} />
+        <SubirArchivo proyectoId={Number(id)} onGuardado={(r) => { cargar(); recargar() ; if (r?.archivo_id) navigate(`/datos/${r.archivo_id}/dashboard`, { state: { aviso: r.mensaje } }) }} />
 
         <div className="card">
           <h2 className="text-sm font-semibold text-gray-900 mb-2">Archivos de este proyecto</h2>
