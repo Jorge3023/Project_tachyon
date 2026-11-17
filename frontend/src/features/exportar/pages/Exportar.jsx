@@ -150,11 +150,11 @@ export default function Exportar() {
       {elegidas.map(w => (
         <div key={w.id} data-wid={w.id} data-titulo={w.titulo || TIPOS[w.tipo].l} className="flex min-w-0"
           style={{ gridColumn: `span ${[3, 4, 6, 8, 12].includes(w.ancho) ? w.ancho : 6}` }}>
-          <TarjetaFija widget={w} datos={resultado?.widgets?.[w.id]} />
+          <TarjetaFija widget={w} datos={resultado?.widgets?.[w.id]} metricas={config?.metricas} />
         </div>
       ))}
     </div>
-  ), [elegidas, resultado])
+  ), [elegidas, resultado, config?.metricas])
 
   // ── Exportar ──
   const nombreBase = [stem, nombreVista].filter(Boolean).join('_')

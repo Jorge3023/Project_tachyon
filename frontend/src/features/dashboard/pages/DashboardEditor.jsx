@@ -10,7 +10,7 @@ import AgregarGrafica from '@/features/dashboard/components/AgregarGrafica'
 import ListaFiltros from '@/features/dashboard/components/Filtros'
 import Notas from '@/features/dashboard/components/Notas'
 import useTablero from '@/features/dashboard/lib/useTablero'
-import { CLASE_ANCHO, GRANOS, TIPOS, widgetNuevo, actualizarWidget, subtituloWidget, fmtNum, nuevoId } from '@/features/dashboard/lib/dash'
+import { CLASE_ANCHO, GRANOS, TIPOS, widgetNuevo, actualizarWidget, subtituloWidget, fmtNum, nuevoId, columnasConMetricas } from '@/features/dashboard/lib/dash'
 
 const tieneTablaAlt = (t) => ['linea', 'area', 'barras', 'dona', 'pareto', 'histograma', 'calor', 'mapa'].includes(t)
 const msg = (e, def) => (typeof e?.response?.data?.detail === 'string' ? e.response.data.detail : def)
@@ -19,10 +19,10 @@ function Esqueleto({ alto = 200 }) {
   return <div className="animate-pulse bg-gray-100 rounded-lg" style={{ height: alto }} aria-label="Cargando gráfica" />
 }
 
-function Tarjeta({ widget, datos, cargando, editando, seleccionada, levantada, refTarjeta, onAsa, onTecladoAsa, onSeleccionar, onDuplicar, onEliminar }) {
+function Tarjeta({ widget, datos, metricas, cargando, editando, seleccionada, levantada, refTarjeta, onAsa, onTecladoAsa, onSeleccionar, onDuplicar, onEliminar }) {
   const [verTabla, setVerTabla] = useState(false)
   const esKpi = widget.tipo === 'kpi'
-  const sub = subtituloWidget(widget)
+  const sub = subtituloWidget(widget, metricas)
   return (
     <section
       ref={refTarjeta}
@@ -121,6 +121,9 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
   const sucio = !!config && JSON.stringify(config) !== base.current
   const esMio = info?.archivo.es_mio
   const columnas = info?.columnas || []
+  const metricas = config?.metricas || []
+  const columnasEd = useMemo(() => columnasConMetricas(columnas, metricas), [columnas, metricas])
+  const usos = useMemo(() => Object.fromEntries(metricas.map(m => [m.nombre, (config?.widgets || []).filter(w => w.medida === m.nombre).length])), [config, metricas])
 
   // Recalcula (con retraso corto) cada vez que cambia la configuración
   const cuenta = useRef(0)
@@ -351,6 +354,12 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
             </p>
           )}
           {!esMio && <p className="mb-4 text-xs text-gray-500">Compartido contigo en solo lectura. Puedes filtrar para explorar; los cambios no se guardan.</p>}
+          {info.avisos?.length > 0 && (
+            <div role="status" className="mb-4 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-4 py-2.5">
+              <p className="font-medium">Esta vista se ajustó porque cambiaron las columnas del archivo{esMio ? '; guárdala para conservarla así' : ''}:</p>
+              <ul className="list-disc ml-4 mt-1 space-y-0.5">{info.avisos.map((a, i) => <li key={i}>{a}</li>)}</ul>
+            </div>
+          )}
 
           {config.widgets.length === 0 ? (
             <div className="card text-center py-14">
@@ -365,7 +374,7 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
                   <div key={w.id} id={`w-${w.id}`} ref={tablero.caja(w.id)}
                     className={`relative flex col-span-12 ${CLASE_ANCHO[w.ancho] || CLASE_ANCHO[6]} ${levantada ? 'z-30' : ''}`}>
                     {levantada && <div aria-hidden="true" className="absolute inset-0 rounded-xl border-2 border-dashed border-brand-300 bg-brand-50/60" />}
-                    <Tarjeta widget={w} datos={resultado?.widgets?.[w.id]} cargando={calculando} editando={editando} seleccionada={sel === w.id}
+                    <Tarjeta widget={w} datos={resultado?.widgets?.[w.id]} metricas={metricas} cargando={calculando} editando={editando} seleccionada={sel === w.id}
                       levantada={levantada} refTarjeta={tablero.tarjeta(w.id)} onAsa={e => tablero.iniciar(e, w.id)} onTecladoAsa={tecladoAsa(w.id)}
                       onSeleccionar={() => setSel(w.id)} onDuplicar={() => duplicar(w.id)} onEliminar={() => eliminar(w.id)} />
                   </div>
@@ -377,7 +386,8 @@ export default function DashboardEditor({ archivoId, vistaInicial, esInicio = fa
       </div>
 
       {editando && widgetSel && (
-        <PanelConfig widget={widgetSel} columnas={columnas} archivoId={id}
+        <PanelConfig widget={widgetSel} columnas={columnasEd} archivoId={id} metricas={metricas} usos={usos}
+          onMetricas={ms => setConfig(c => { const n = { ...c, metricas: ms }; if (!ms.length) delete n.metricas; return n })}
           onCambio={patch => patchWidget(widgetSel.id, patch)} onReemplazar={reemplazarWidget}
           onDuplicar={() => duplicar(widgetSel.id)} onEliminar={() => eliminar(widgetSel.id)}
           onMover={d => mover(widgetSel.id, d)}

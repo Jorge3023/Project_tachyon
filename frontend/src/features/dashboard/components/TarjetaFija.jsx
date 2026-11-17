@@ -3,9 +3,9 @@ import Notas from './Notas'
 import { TIPOS, TINTA, subtituloWidget } from '@/features/dashboard/lib/dash'
 
 /** Tarjeta de una gráfica sin controles de edición: es lo que se fotografía al exportar. */
-export default function TarjetaFija({ widget, datos }) {
+export default function TarjetaFija({ widget, datos, metricas }) {
   const esKpi = widget.tipo === 'kpi'
-  const sub = subtituloWidget(widget)
+  const sub = subtituloWidget(widget, metricas)
   const titulo = widget.titulo || TIPOS[widget.tipo].l
   return (
     <section className={`card flex flex-col flex-1 min-w-0 ${esKpi ? 'p-4' : ''}`} style={{ borderColor: TINTA.rejilla }} aria-label={titulo}>
