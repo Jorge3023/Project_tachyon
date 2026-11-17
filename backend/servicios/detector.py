@@ -65,6 +65,39 @@ def _vacios(serie: pd.Series) -> pd.Series:
     return m
 
 
+# Textos que en realidad significan «sin dato». Solo se usan al leer números y fechas: ahí no cuentan como
+# «valores que no se pudieron leer» (en categorías se respetan tal cual, porque pueden tener sentido).
+_NULOS_TXT = {"", "n a", "n d", "na", "nd", "null", "none", "nan", "nat", "sin fecha", "sin dato", "sin datos", "s d",
+              "no aplica", "no disponible", "sin informacion", "pendiente de captura"}
+
+
+def _es_nulo_txt(v) -> bool:
+    return isinstance(v, str) and _norm(v) in _NULOS_TXT
+
+
+def _marcar_nulos_txt(serie: pd.Series, donde: np.ndarray) -> np.ndarray:
+    """De las celdas marcadas en `donde`, cuáles dicen «sin dato» con texto (N/A, N/D, «sin fecha», «-»…)."""
+    out = np.zeros(len(serie), dtype=bool)
+    if not donde.any():
+        return out
+    vals = serie.to_numpy(dtype=object)[donde]
+    nulos = {u for u in pd.unique(vals) if _es_nulo_txt(u)}
+    if nulos:
+        out[donde] = np.fromiter((isinstance(v, str) and v in nulos for v in vals), bool, len(vals))
+    return out
+
+
+def no_leidos(serie: pd.Series, convertida: pd.Series) -> tuple:
+    """(cuántos valores con contenido no se pudieron convertir, hasta 3 ejemplos). No cuenta vacíos ni «N/A»."""
+    malos = (~_vacios(serie).to_numpy()) & convertida.isna().to_numpy()
+    if not malos.any():
+        return 0, []
+    malos &= ~_marcar_nulos_txt(serie, malos)
+    n = int(malos.sum())
+    ejemplos = list(dict.fromkeys(str(v).strip() for v in serie.to_numpy(dtype=object)[malos][:500]))[:3]
+    return n, ejemplos
+
+
 def _todo_texto(serie: pd.Series) -> bool:
     """True si todos los valores no vacíos son cadenas (permite usar las operaciones rápidas de texto)."""
     return serie.dtype == object and pd.api.types.infer_dtype(serie, skipna=True) == "string"
@@ -363,6 +396,15 @@ def _a_numero(serie: pd.Series) -> pd.Series:
 
 _RE_FECHA_TXT = re.compile(
     r"(\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4})|(\d{1,2}\s*(de\s+)?[a-zA-Záéíóú]{3,10}\.?\s*(de\s+)?\d{2,4})|(^\d{1,2}:\d{2})")
+# Solo año y mes: «2023-01», «2023/1», «01/2023» (el año debe tener 4 cifras para no confundir rangos como «1-12»)
+_RE_ANIO_MES = re.compile(r"^\s*(19|20)\d{2}[-/.](0?[1-9]|1[0-2])\s*$")
+_RE_MES_ANIO = re.compile(r"^\s*(0?[1-9]|1[0-2])[-/.](19|20)\d{2}\s*$")
+
+
+def _a_dia_uno(texto: pd.Series) -> pd.Series:
+    """'2023-01' / '01/2023' → '2023-01-01' (primer día del mes), para que se lean como fecha ISO."""
+    t = texto.str.replace(r"^\s*(\d{4})[-/.](\d{1,2})\s*$", r"\1-\2-01", regex=True)
+    return t.str.replace(r"^\s*(\d{1,2})[-/.](\d{4})\s*$", r"\2-\1-01", regex=True)
 
 
 def _dayfirst(valores: list) -> bool:
@@ -385,6 +427,8 @@ _MESES_ES = {"enero": "Jan", "ene": "Jan", "febrero": "Feb", "feb": "Feb", "marz
              "diciembre": "Dec", "dic": "Dec"}
 _RE_MES_ES = re.compile(r"\b(" + "|".join(sorted(_MESES_ES, key=len, reverse=True)) + r")\b\.?", re.IGNORECASE)
 _RE_DE = re.compile(r"\s+de\s+", re.IGNORECASE)
+_RE_MES_EN = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|"
+                        r"july|august|september|october|november|december)\b\.?", re.IGNORECASE)
 
 
 def _meses_es_a_en(t: str) -> str:
@@ -420,6 +464,9 @@ def _a_fecha(serie: pd.Series) -> pd.Series:
         texto[vac.to_numpy()] = np.nan
     else:
         texto = serie.map(lambda v: np.nan if _vacio(v) else _meses_es_a_en(str(v).strip()))
+    muestra_am = [str(v) for v in texto.dropna().head(300)]
+    if any(_RE_ANIO_MES.match(v) or _RE_MES_ANIO.match(v) for v in muestra_am):
+        texto = _a_dia_uno(texto.astype(object))
     df_first = _dayfirst(list(texto.dropna().head(500)))
 
     def _convertir(t, dayfirst):
@@ -459,12 +506,16 @@ def _proporcion_fechas(serie: pd.Series) -> float:
         return 0.0
     if pd.api.types.is_datetime64_any_dtype(serie):
         return 1.0
-    muestra = nn.head(500)
+    muestra = nn.head(1500)
+    muestra = muestra[[not _es_nulo_txt(v) for v in muestra]].head(500)     # «N/A», «sin fecha» no cuentan en contra
+    if muestra.empty:
+        return 0.0
     es_obj_fecha = [hasattr(v, "year") and not isinstance(v, str) for v in muestra]
     if all(es_obj_fecha):
         return 1.0
     # un valor suelto que solo "parece" número no es fecha: exigir separadores o mes escrito
-    cand = muestra[[bool(_RE_FECHA_TXT.search(str(v)) or (_RE_MES_ES.search(str(v)) and re.search(r"\d", str(v))))
+    cand = muestra[[bool(_RE_FECHA_TXT.search(str(v)) or _RE_ANIO_MES.match(str(v)) or _RE_MES_ANIO.match(str(v))
+                         or ((_RE_MES_ES.search(str(v)) or _RE_MES_EN.search(str(v))) and re.search(r"\d", str(v))))
                     for v in muestra]]
     if len(cand) < 0.8 * len(muestra):
         return 0.0
@@ -486,7 +537,8 @@ PISTAS = {
                "score", "kg", "pct", "porcentaje", "tasa", "rate", "saldo", "balance", "valor", "value",
                "unidades", "units", "piezas", "pzas", "subtotal", "iva", "descuento", "discount", "amount",
                "duracion", "duration", "promedio", "avg", "sum", "count", "conteo", "salario", "sueldo",
-               "pago", "nomina", "comision", "bono", "tarifa", "renta", "altura", "longitud", "temperatura"},
+               "pago", "nomina", "comision", "bono", "tarifa", "renta", "altura", "longitud", "temperatura",
+               "existencia", "existencias", "stock", "inventario"},
     "categoria": {"categoria", "category", "tipo", "type", "region", "zona", "area", "departamento", "depto",
                   "linea", "line", "turno", "shift", "equipo", "equipment", "cliente", "customer", "producto",
                   "product", "modelo", "model", "sucursal", "marca", "brand", "pais", "country", "ciudad",
@@ -522,6 +574,46 @@ def _formato(serie: pd.Series) -> Optional[str]:
     return None
 
 
+_RX_FMT_PCT = re.compile(r"(%|porcentaje|\bpct\b|\btasa\b|\bmargen\b)", re.I)
+_RX_FMT_MONEDA = re.compile(r"(importe|monto|precio|costo|ingreso|venta|gasto|n[oó]mina|salario|sueldo|\bpago|saldo|"
+                            r"utilidad|subtotal|\biva\b|valor total|revenue|price|cost|amount)", re.I)
+FORMATOS = ("numero", "moneda", "porcentaje")
+
+
+def formato_por_nombre(nombre: str, valores: Optional[pd.Series] = None) -> Optional[str]:
+    """Formato probable de una medida por su nombre. Porcentaje solo si los valores van de 0 a 100 (no 0.15)."""
+    if _RX_FMT_PCT.search(str(nombre)):
+        if valores is not None:
+            v = valores.dropna()
+            if len(v) and float(v.abs().max()) <= 1.5:
+                return None
+        return "porcentaje"
+    if _RX_FMT_MONEDA.search(str(nombre)):
+        return "moneda"
+    return None
+
+
+_SI = {"si", "s", "yes", "y", "true", "verdadero"}
+_NO = {"no", "n", "false", "falso"}
+
+
+def mapa_variantes(conteos: pd.Series) -> dict:
+    """{variante: forma elegida} para textos que solo cambian en mayúsculas, acentos o espacios («si», «Sí», «SI»).
+    Sí/No se escriben siempre «Sí» y «No». `conteos` es un value_counts de los textos ya sin espacios extremos."""
+    if len(conteos) < 2 or len(conteos) > 5000:
+        return {}
+    claves = {v: _norm(v) for v in conteos.index if isinstance(v, str)}
+    ks = set(claves.values()) - {""}
+    if ks and ks <= (_SI | _NO) and ks & {"si", "no", "yes", "true", "false", "verdadero", "falso"}:
+        return {v: ("Sí" if k in _SI else "No") for v, k in claves.items() if k and v != ("Sí" if k in _SI else "No")}
+    grupos = {}
+    for v in conteos.index:                      # value_counts viene de más a menos frecuente
+        k = claves.get(v)
+        if k:
+            grupos.setdefault(k, []).append(v)
+    return {v: vs[0] for vs in grupos.values() if len(vs) > 1 for v in vs[1:]}
+
+
 def _perfil_columna(nombre: str, serie: pd.Series) -> dict:
     vacios = _vacios(serie)
     nn = serie[~vacios]
@@ -555,21 +647,29 @@ def _perfil_columna(nombre: str, serie: pd.Series) -> dict:
         if nums.notna().mean() > 0.9 and nums.dropna().between(20000, 80000).all():
             cand["fecha"] = (0.8, "Números de serie de Excel con nombre de fecha")
 
-    # — número
+    # — número («N/A», «N/D», «-» no cuentan en contra)
     numeros = _a_numero(serie)
-    pn = float(numeros.notna().sum()) / n
+    nulos_txt = int(_marcar_nulos_txt(serie, (~vacios.to_numpy()) & numeros.isna().to_numpy()).sum())
+    pn = float(numeros.notna().sum()) / max(1, n - nulos_txt)
     con_ceros = bool((texto_nn.str.match(r"^0\d+$")).any())
-    if pn >= 0.9 and "fecha" not in cand and not con_ceros:
+    casi = pista == "numero" and 0.6 <= pn < 0.9      # la mayoría son números y el nombre lo confirma
+    if (pn >= 0.9 or casi) and "fecha" not in cand and not con_ceros:
         valores = numeros.dropna()
         enteros = bool((valores == valores.round()).all())
         c = 0.9
         razon = "Los valores son numéricos"
         if pista == "numero":
             c, razon = 0.97, "Valores numéricos y el nombre sugiere una métrica"
-        if enteros and unicos <= 10 and pista != "numero":
+        if casi:
+            c, razon = 0.7, f"La mayoría son números ({pn:.0%}); el resto no se podrá leer"
+        if enteros and unicos <= 11 and _RX_ESCALA.search(_norm(nombre)):
+            cand["numero"] = (0.9, "Calificación en escala: se trata como medida (para promediarla)")
+            cand["categoria"] = (0.6, "O una categoría")
+        elif enteros and unicos <= 10 and pista != "numero":
             # pocos enteros distintos: parece una categoría codificada (turno 1/2/3, mes 1-12…)
             cand["categoria"] = (0.8, f"Solo {unicos} valores numéricos distintos: parece un código")
             cand["numero"] = (0.55, razon)
+            base["_escala"] = (float(valores.min()), float(valores.max()))
         elif enteros and ratio_unicos >= 0.97 and n >= 20 and pista in (None, "identificador"):
             # un identificador suele ser una secuencia densa (1001, 1002…); una métrica se reparte en un rango amplio
             rango = float(valores.max() - valores.min() + 1)
@@ -636,11 +736,51 @@ def _perfil_columna(nombre: str, serie: pd.Series) -> dict:
     # si la mejor alternativa está muy cerca, la confianza baja (hay duda real)
     if alternativas and conf - alternativas[0]["confianza"] < 0.15:
         conf = min(conf, 0.7)
-    return {**base, "rol": rol, "confianza": round(conf, 2), "alternativas": alternativas, "razon": razon}
+
+    # Qué pasaría con los valores según el tipo (para avisar ANTES de guardar): cuántos no se podrían leer,
+    # y qué variantes de escritura se unificarían. Solo para el tipo propuesto y sus alternativas.
+    posibles = {rol} | {a["rol"] for a in alternativas}
+    lectura = {}
+    if "numero" in posibles:
+        k, ej = no_leidos(serie, numeros)
+        lectura["numero"] = {"n": k, "ejemplos": ej}
+    if "fecha" in posibles:
+        k, ej = no_leidos(serie, _a_fecha(serie))
+        lectura["fecha"] = {"n": k, "ejemplos": ej}
+    variantes = []
+    if posibles & {"categoria", "estado"} and unicos <= 5000:
+        mv = mapa_variantes(texto_nn.value_counts())
+        variantes = [[a, b] for a, b in list(mv.items())[:6]]
+    formato = base["formato"]
+    if not formato and "numero" in posibles:
+        formato = formato_por_nombre(nombre, numeros)
+    return {**base, "formato": formato, "rol": rol, "confianza": round(conf, 2), "alternativas": alternativas,
+            "razon": razon, "lectura": lectura, "variantes": variantes}
+
+
+_RX_ESCALA = re.compile(r"\b(satisfaccion|calificacion|puntuacion|puntaje|rating|evaluacion|nps|score|valoracion|"
+                        r"recomendacion|likert)\b")
+_ESCALAS = {(1.0, 5.0), (0.0, 5.0), (1.0, 7.0), (1.0, 10.0), (0.0, 10.0), (1.0, 4.0)}
 
 
 def perfilar_columnas(df: pd.DataFrame) -> list:
-    return [_perfil_columna(str(c), df[c]) for c in df.columns]
+    perfiles = [_perfil_columna(str(c), df[c]) for c in df.columns]
+    # Varias columnas con la misma escala (todas de 1 a 5, p. ej.) son preguntas de una encuesta: se promedian,
+    # no son códigos como «Turno 1/2/3». Si hay al menos dos, pasan a medida.
+    escalas = {}
+    for p in perfiles:
+        e = p.get("_escala")
+        if e in _ESCALAS and p["rol"] == "categoria":
+            escalas.setdefault(e, []).append(p)
+    for e, grupo in escalas.items():
+        if len(grupo) >= 2:
+            for p in grupo:
+                p["rol"], p["confianza"] = "numero", 0.8
+                p["razon"] = f"Escala de {e[0]:g} a {e[1]:g} repetida en {len(grupo)} columnas: parece una calificación"
+                p["alternativas"] = [{"rol": "categoria", "confianza": 0.6}]
+    for p in perfiles:
+        p.pop("_escala", None)
+    return perfiles
 
 
 # ───────────────────────────── plantillas ─────────────────────────────
@@ -663,13 +803,16 @@ def aplicar_plantilla(perfiles: list, plantilla_cols: list) -> list:
             p["rol"], p["confianza"], p["razon"] = c["rol"], 1.0, "Tomado de tu plantilla guardada"
             p["alternativas"] = []
             p["nombre_mostrar"] = c.get("nombre_mostrar") or p["nombre"]
+            if c.get("formato") and c["rol"] == "numero":
+                p["formato"] = c["formato"]
     return perfiles
 
 
 # ───────────────────────────── aplicar el esquema confirmado ─────────────────────────────
-def aplicar_esquema(df: pd.DataFrame, columnas: list) -> pd.DataFrame:
+def aplicar_esquema(df: pd.DataFrame, columnas: list, informe: Optional[dict] = None) -> pd.DataFrame:
     """
     columnas: [{nombre (origen), rol, nombre_mostrar?}]. Devuelve el DataFrame limpio y tipado.
+    informe (opcional): se llena con {nombre_final: {"no_leidos", "ejemplos", "unificados"}}.
     """
     out = {}
     usados = set()
@@ -683,16 +826,27 @@ def aplicar_esquema(df: pd.DataFrame, columnas: list) -> pd.DataFrame:
             nombre, k = f"{base}_{k}", k + 1
         usados.add(nombre)
         s = df[origen]
+        info = {"no_leidos": 0, "ejemplos": [], "unificados": 0}
         if rol == "fecha":
             out[nombre] = _a_fecha(s)
+            info["no_leidos"], info["ejemplos"] = no_leidos(s, out[nombre])
         elif rol == "numero":
             out[nombre] = _a_numero(s)
-        elif _todo_texto(s):
-            limpio = s.str.strip().astype(object)
-            limpio[_vacios(limpio).to_numpy()] = None
-            out[nombre] = limpio
+            info["no_leidos"], info["ejemplos"] = no_leidos(s, out[nombre])
         else:
-            out[nombre] = s.map(lambda v: None if _vacio(v) else str(v).strip())
+            if _todo_texto(s):
+                limpio = s.str.strip().astype(object)
+                limpio[_vacios(limpio).to_numpy()] = None
+            else:
+                limpio = s.map(lambda v: None if _vacio(v) else str(v).strip())
+            if rol in ("categoria", "estado"):
+                mv = mapa_variantes(limpio.value_counts())
+                if mv:
+                    limpio = limpio.map(lambda v: mv.get(v, v) if v is not None else None)
+                    info["unificados"] = len(mv)
+            out[nombre] = limpio
+        if informe is not None:
+            informe[nombre] = info
     res = pd.DataFrame(out)
     # quitar filas totalmente vacías tras la limpieza
     if not res.empty:
@@ -700,19 +854,61 @@ def aplicar_esquema(df: pd.DataFrame, columnas: list) -> pd.DataFrame:
     return res
 
 
-def resumen_columnas(df: pd.DataFrame, columnas: list) -> list:
-    """Resumen por columna ya limpia, para la página 'Ver datos'."""
+def _relaciones(df: pd.DataFrame, roles: dict) -> tuple:
+    """(correlaciones entre medidas, jerarquías entre categorías). Sirven para no proponer gráficas obvias:
+    «Importe vs Costo» con r = 0.99, o «Ciudad × Región» cuando cada ciudad pertenece a una sola región."""
+    nums = [c for c in df.columns if roles.get(c) == "numero"][:8]
+    corr = {}
+    if len(nums) >= 2 and len(df) >= 3:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m = df[nums].corr()
+        for a in nums:
+            corr[a] = {b: round(float(m.loc[a, b]), 3) for b in nums if b != a and pd.notna(m.loc[a, b])}
+    dims = [c for c in df.columns if roles.get(c) in ("categoria", "estado")]
+    codigos = {}
+    for c in dims:
+        k, u = pd.factorize(df[c])
+        if 2 <= len(u) <= 200:
+            codigos[c] = (k, len(u))
+    determina = {}
+    nombres = list(codigos)[:10]
+    for a in nombres:
+        ka, na = codigos[a]
+        for b in nombres:
+            kb, nb = codigos[b]
+            if a == b or nb > na:
+                continue
+            ok = (ka >= 0) & (kb >= 0)
+            if not ok.any():
+                continue
+            pares = np.unique(ka[ok].astype(np.int64) * (nb + 1) + kb[ok])
+            if len(pares) == len(np.unique(ka[ok])) and (nb < na or a < b):
+                determina.setdefault(a, []).append(b)
+    return corr, determina
+
+
+def resumen_columnas(df: pd.DataFrame, columnas: list, informe: Optional[dict] = None) -> list:
+    """Resumen por columna ya limpia, para la página 'Ver datos' y para proponer el dashboard."""
     roles = {(c.get("nombre_mostrar") or c["nombre"]): c["rol"] for c in columnas if c["rol"] != "ignorar"}
+    corr, determina = _relaciones(df, roles)
     out = []
     for col in df.columns:
         s = df[col]
         rol = roles.get(col, "texto")
         d = {"nombre": col, "rol": rol, "nulos": int(s.isna().sum())}
+        if informe and informe.get(col, {}).get("no_leidos"):
+            d["no_leidos"] = informe[col]["no_leidos"]
+            d["ejemplos_no_leidos"] = informe[col]["ejemplos"]
+        if informe and informe.get(col, {}).get("unificados"):
+            d["unificados"] = informe[col]["unificados"]
         if rol == "numero":
             v = s.dropna()
             if len(v):
                 d.update({"min": float(v.min()), "max": float(v.max()), "media": float(v.mean()),
-                          "suma": float(v.sum())})
+                          "suma": float(v.sum()), "enteros": bool((v == v.round()).all()), "unicos": int(v.nunique())})
+            if corr.get(col):
+                d["corr"] = corr[col]
         elif rol == "fecha":
             v = s.dropna()
             if len(v):
@@ -721,5 +917,7 @@ def resumen_columnas(df: pd.DataFrame, columnas: list) -> list:
             d["unicos"] = int(s.nunique())
             top = s.value_counts().head(5)
             d["top"] = [{"valor": str(k), "n": int(v)} for k, v in top.items()]
+            if determina.get(col):
+                d["determina"] = determina[col]
         out.append(d)
     return out

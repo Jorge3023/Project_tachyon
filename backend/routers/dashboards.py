@@ -20,6 +20,24 @@ class VistaIn(BaseModel):
     nombre: Optional[str] = None
     config: Optional[dict] = None
 
+def _datos_para_sugerir(a, esquema):
+    """Categorías y medidas del archivo, para que la propuesta elija dónde varía más una tasa. Si falla, None."""
+    import pyarrow.parquet as pq
+    try:
+        cols = [c["nombre"] for c in esquema if c["rol"] in ("categoria", "estado", "numero", "fecha")]
+        if not cols:
+            return None
+        _, parquet = datos_dataset(a)
+        return pq.ParquetFile(io.BytesIO(parquet)).read(columns=cols).to_pandas()
+    except Exception:
+        return None
+
+
+def _propuesta(a, esquema):
+    resumen = json.loads(a["resumen_json"]) if a["resumen_json"] else []
+    return dash.sugerir(esquema, resumen, _datos_para_sugerir(a, esquema))
+
+
 @router.get("/datasets/{archivo_id}/dashboard")
 def ver_dashboard(archivo_id: int, vista: Optional[int] = None, u=Depends(get_usuario_actual)):
     """Vista guardada (la pedida o la primera) o, si el archivo aún no tiene ninguna, la propuesta automática."""
@@ -33,20 +51,24 @@ def ver_dashboard(archivo_id: int, vista: Optional[int] = None, u=Depends(get_us
             actual = vista_de(conn, a, vista)
         elif vistas:
             actual = vista_de(conn, a, vistas[0]["id"])
+        avisos = []
         if actual is not None:
             try:
                 config = dash.limpiar_config(json.loads(actual["config_json"]), esquema)
             except (dash.ConfigInvalida, ValueError):
-                config = None                      # configuración dañada: se muestra la propuesta
+                # Algo ya no encaja (p. ej. se cambió el tipo de una columna): se abre lo que sí sirve y se avisa
+                try:
+                    config = dash.limpiar_config(json.loads(actual["config_json"]), esquema, avisos)
+                except (dash.ConfigInvalida, ValueError):
+                    config, avisos = None, []      # configuración dañada: se muestra la propuesta
         guardada = config is not None
         if config is None:
-            resumen = json.loads(a["resumen_json"]) if a["resumen_json"] else []
-            config = dash.limpiar_config(dash.sugerir(esquema, resumen), esquema)
+            config = dash.limpiar_config(_propuesta(a, esquema), esquema)
         return {"archivo": {"id": a["id"], "nombre": a["nombre"], "filas": a["filas"], "es_mio": a["subido_por"] == u["id"]},
                 "vistas": vistas,
                 "vista": {"id": actual["id"] if guardada else None,
                           "nombre": actual["nombre"] if guardada else "Resumen sugerido", "guardada": guardada},
-                "config": config,
+                "config": config, "avisos": avisos,
                 "columnas": columnas_editor(a, esquema)}
     finally:
         conn.close()
@@ -102,8 +124,7 @@ def crear_vista(archivo_id: int, datos: VistaIn, u=Depends(get_usuario_actual)):
         if any(v["nombre"].lower() == nombre.lower() for v in vistas):
             raise HTTPException(status_code=409, detail="Ya hay una vista con ese nombre")
         if datos.config is None:
-            resumen = json.loads(a["resumen_json"]) if a["resumen_json"] else []
-            datos.config = dash.sugerir(esquema, resumen)
+            datos.config = _propuesta(a, esquema)
         config = config_limpia(datos.config, esquema)
         cur = conn.execute("INSERT INTO dashboards (archivo_id, owner_id, nombre, config_json) VALUES (?,?,?,?)",
                            (archivo_id, u["id"], nombre, json.dumps(config)))

@@ -3,6 +3,8 @@
 // Paleta categórica validada (ver dataviz): se asigna en orden fijo, nunca se cicla.
 export const PALETA = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948']
 export const COLOR_OTROS = '#898781'
+export const SIN_DATO = '(sin dato)'
+const COLOR_SIN_DATO = '#c3c2b7'
 export const TINTA = { primaria: '#0b0b0b', secundaria: '#52514e', suave: '#898781', rejilla: '#e1e0d9', eje: '#c3c2b7', superficie: '#fcfcfb' }
 // Rampa secuencial (un solo tono, claro → oscuro) para el mapa de calor
 export const RAMPA_AZUL = ['#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#256abf', '#184f95', '#0d366b']
@@ -25,28 +27,48 @@ export const AGGS = [
   { v: 'suma', l: 'Suma' }, { v: 'promedio', l: 'Promedio' }, { v: 'conteo', l: 'Conteo' },
   { v: 'min', l: 'Mín.' }, { v: 'max', l: 'Máx.' }, { v: 'mediana', l: 'Mediana' }, { v: 'unicos', l: 'Únicos' },
 ]
-const AGG_TEXTO = { suma: 'Suma', promedio: 'Promedio', conteo: 'Conteo de filas', min: 'Mínimo', max: 'Máximo', mediana: 'Mediana', unicos: 'Valores únicos' }
+const AGG_TEXTO = { suma: 'Suma', promedio: 'Promedio', conteo: 'Conteo de filas', min: 'Mínimo', max: 'Máximo', mediana: 'Mediana', unicos: 'Valores únicos', calc: 'Métrica calculada' }
+
+// Métricas calculadas: se combinan los TOTALES de cada grupo (suma de A ÷ suma de B), nunca fila por fila
+export const OPERACIONES = [
+  { v: 'pct', l: 'A ÷ B en %', d: 'Tasa: defectuosas ÷ producidas, cancelados ÷ pedidos…' },
+  { v: 'margen', l: '(A − B) ÷ A en %', d: 'Margen: (venta − costo) ÷ venta' },
+  { v: 'div', l: 'A ÷ B', d: 'Razón: importe ÷ piezas = precio por pieza' },
+  { v: 'resta', l: 'A − B', d: 'Diferencia: venta − costo = utilidad' },
+  { v: 'suma', l: 'A + B', d: 'Suma de dos columnas' },
+]
+const SIMBOLO_OP = { pct: '÷', div: '÷', resta: '−', suma: '+' }
+export function describirMetrica(m) {
+  if (!m) return ''
+  if (m.op === 'margen') return `(${m.a} − ${m.b}) ÷ ${m.a}, en %`
+  return `${m.a} ${SIMBOLO_OP[m.op]} ${m.b}${m.op === 'pct' ? ', en %' : ''}`
+}
+/** Columnas del archivo + las métricas calculadas de la vista (como pseudo-columnas de rol «calculada»). */
+export function columnasConMetricas(columnas, metricas) {
+  return [...columnas, ...(metricas || []).map(m => ({ nombre: m.nombre, rol: 'calculada', op: m.op, metrica: m }))]
+}
 
 const R_DIM = ['categoria', 'estado', 'identificador']
 const R_X_TIEMPO = ['fecha', 'categoria', 'estado']
+const MEDIBLE = ['numero', 'calculada']
 
 // Qué hace cada tipo y qué columnas admite en cada campo
 export const TIPOS = {
-  kpi:        { l: 'Indicador',    d: 'Una cifra clave, con comparación contra el periodo anterior.', campos: { medida: ['numero'], x: ['fecha'] }, aggs: true },
-  linea:      { l: 'Líneas',       d: 'Evolución en el tiempo o entre categorías.', campos: { x: R_X_TIEMPO, medida: ['numero'], serie: ['categoria', 'estado'] }, aggs: true, grano: true },
-  area:       { l: 'Área',         d: 'Como líneas, resaltando el volumen acumulado.', campos: { x: R_X_TIEMPO, medida: ['numero'], serie: ['categoria', 'estado'] }, aggs: true, grano: true },
-  barras:     { l: 'Barras',       d: 'Compara categorías; agrupadas, apiladas u horizontales.', campos: { x: ['fecha', ...R_DIM], medida: ['numero'], serie: ['categoria', 'estado'] }, aggs: true, grano: true },
+  kpi:        { l: 'Indicador',    d: 'Una cifra clave, con comparación contra el periodo anterior.', campos: { medida: MEDIBLE, x: ['fecha'] }, aggs: true },
+  linea:      { l: 'Líneas',       d: 'Evolución en el tiempo o entre categorías.', campos: { x: R_X_TIEMPO, medida: MEDIBLE, serie: ['categoria', 'estado'] }, aggs: true, grano: true },
+  area:       { l: 'Área',         d: 'Como líneas, resaltando el volumen acumulado.', campos: { x: R_X_TIEMPO, medida: MEDIBLE, serie: ['categoria', 'estado'] }, aggs: true, grano: true },
+  barras:     { l: 'Barras',       d: 'Compara categorías; agrupadas, apiladas u horizontales.', campos: { x: ['fecha', ...R_DIM], medida: MEDIBLE, serie: ['categoria', 'estado'] }, aggs: true, grano: true },
   dona:       { l: 'Circular',     d: 'Participación de cada categoría en el total.', campos: { x: R_DIM, medida: ['numero'] }, aggs: ['suma', 'conteo', 'unicos'] },
   pareto:     { l: 'Pareto',       d: 'Ranking de categorías con el acumulado del total.', campos: { x: R_DIM, medida: ['numero'] }, aggs: ['suma', 'conteo', 'unicos'] },
   dispersion: { l: 'Dispersión',   d: 'Relación entre dos columnas numéricas.', campos: { x: ['numero'], y: ['numero'], serie: ['categoria', 'estado'] } },
   histograma: { l: 'Histograma',   d: 'Cómo se distribuyen los valores de una columna.', campos: { x: ['numero'] } },
-  calor:      { l: 'Mapa de calor', d: 'Cruza dos columnas y colorea la intensidad.', campos: { x: ['fecha', ...R_DIM], y: R_DIM, medida: ['numero'] }, aggs: true, grano: true },
+  calor:      { l: 'Mapa de calor', d: 'Cruza dos columnas y colorea la intensidad.', campos: { x: ['fecha', ...R_DIM], y: R_DIM, medida: MEDIBLE }, aggs: true, grano: true },
   mapa:       { l: 'Mapa geográfico', d: 'Puntos sobre un mapa real a partir de latitud y longitud.', campos: { lat: ['numero'], lon: ['numero'], medida: ['numero'], serie: ['categoria', 'estado'] }, aggs: true },
   tabla:      { l: 'Tabla',        d: 'Las filas del archivo, ordenadas como quieras.', campos: {} },
 }
 export const ORDEN_TIPOS = ['kpi', 'linea', 'area', 'barras', 'dona', 'pareto', 'dispersion', 'histograma', 'calor', 'mapa', 'tabla']
 
-export const ROL_TEXTO = { fecha: 'Fecha', numero: 'Número', categoria: 'Categoría', estado: 'Estado', identificador: 'Identificador', texto: 'Texto' }
+export const ROL_TEXTO = { fecha: 'Fecha', numero: 'Número', categoria: 'Categoría', estado: 'Estado', identificador: 'Identificador', texto: 'Texto', calculada: 'Calculada' }
 
 const RX_LAT = /^(lat|latitud|latitude)$/i
 const RX_LON = /^(lon|lng|long|longitud|longitude)$/i
@@ -105,18 +127,23 @@ export function widgetNuevo(tipo, columnas) {
   const dims = por(['categoria', 'estado'])
   const fechas = por(['fecha'])
   const dimsId = por(R_DIM)
-  if (tipo === 'kpi') { w.medida = nums[0]?.nombre ?? null; w.agg = w.medida ? 'suma' : 'conteo' }
+  // La agregación por defecto la propone el servidor por columna: precios y porcentajes se promedian, importes se suman
+  const aggDe = (nombre) => columnas.find(c => c.nombre === nombre)?.agg || 'suma'
+  if (tipo === 'kpi') { w.medida = nums[0]?.nombre ?? null; w.agg = w.medida ? aggDe(w.medida) : 'conteo' }
   if (tipo === 'linea' || tipo === 'area') {
-    w.x = (fechas[0] || dims[0])?.nombre; w.medida = nums[0]?.nombre ?? null; w.agg = w.medida ? 'suma' : 'conteo'; w.ancho = 12
+    w.x = (fechas[0] || dims[0])?.nombre; w.medida = nums[0]?.nombre ?? null; w.agg = w.medida ? aggDe(w.medida) : 'conteo'; w.ancho = 12
   }
-  if (tipo === 'barras') { w.x = (dimsId[0] || fechas[0])?.nombre; w.medida = nums[0]?.nombre ?? null; w.agg = w.medida ? 'suma' : 'conteo'; w.top = 10; w.orden = 'desc'; w.orientacion = 'v'; w.apilado = false }
+  if (tipo === 'barras') {
+    w.x = (dimsId[0] || fechas[0])?.nombre; w.medida = nums[0]?.nombre ?? null; w.agg = w.medida ? aggDe(w.medida) : 'conteo'; w.top = 10; w.orden = 'desc'; w.apilado = false
+    w.orientacion = dimsId[0] ? 'h' : 'v'          // nombres de categoría: horizontal para que se lean completos
+  }
   if (tipo === 'dona' || tipo === 'pareto') { w.x = dimsId[0]?.nombre; w.medida = nums[0]?.nombre ?? null; w.agg = w.medida ? 'suma' : 'conteo'; w.top = tipo === 'dona' ? 6 : 10 }
   if (tipo === 'dispersion') { w.x = nums[0]?.nombre; w.y = nums[1]?.nombre }
   if (tipo === 'histograma') { w.x = nums[0]?.nombre; w.bins = 0 }
   if (tipo === 'calor') {
     w.x = (dimsId[0] || fechas[0])?.nombre
     w.y = por(R_DIM, [w.x])[0]?.nombre
-    w.medida = nums[0]?.nombre ?? null; w.agg = w.medida ? 'suma' : 'conteo'; w.top = 10
+    w.medida = nums[0]?.nombre ?? null; w.agg = w.medida ? aggDe(w.medida) : 'conteo'; w.top = 10
   }
   if (tipo === 'mapa') {
     const g = columnasGeo(columnas)
@@ -131,7 +158,7 @@ export function widgetNuevo(tipo, columnas) {
 export function tituloAutomatico(w) {
   const m = w.medida
   switch (w.tipo) {
-    case 'kpi': return m ? `${AGG_TEXTO[w.agg]} de ${m}` : 'Registros'
+    case 'kpi': return m ? (w.agg === 'calc' ? m : `${AGG_TEXTO[w.agg]} de ${m}`) : 'Registros'
     case 'linea': case 'area': return `${m ? `${m}` : 'Registros'} por ${w.x || '…'}`
     case 'barras': return `${m ? `${m}` : 'Registros'} por ${w.x || '…'}`
     case 'dona': return `${m ? `${m}` : 'Registros'} por ${w.x || '…'}`
@@ -144,7 +171,11 @@ export function tituloAutomatico(w) {
   }
 }
 
-export function subtituloWidget(w) {
+export function subtituloWidget(w, metricas) {
+  if (w.agg === 'calc' && w.medida) {
+    const m = (metricas || []).find(x => x.nombre === w.medida)
+    return m ? describirMetrica(m) : 'Métrica calculada'
+  }
   if (['linea', 'area', 'barras', 'calor', 'dona', 'pareto', 'mapa'].includes(w.tipo)) {
     return w.medida ? `${AGG_TEXTO[w.agg] || ''} de ${w.medida}` : 'Conteo de filas'
   }
@@ -154,6 +185,7 @@ export function subtituloWidget(w) {
 
 const _num = new Intl.NumberFormat('es-MX', { maximumFractionDigits: 2 })
 const _int = new Intl.NumberFormat('es-MX', { maximumFractionDigits: 0 })
+const _uno = new Intl.NumberFormat('es-MX', { maximumFractionDigits: 1 })
 export function fmtNum(v) {
   if (v === null || v === undefined || Number.isNaN(v)) return '—'
   return Math.abs(v) >= 1000 ? _int.format(v) : _num.format(v)
@@ -167,12 +199,28 @@ export function fmtCompacto(v) {
   if (a >= 1e4) return `${_num.format(v / 1e3)} k`
   return fmtNum(v)
 }
+/** Cifra de un indicador: completa hasta 999,999 (12,000 y 1,500 se ven igual); abreviada desde el millón. */
+export function fmtCifra(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—'
+  return Math.abs(v) >= 1e6 ? fmtCompacto(v) : fmtNum(v)
+}
+/**
+ * Un valor con su formato: moneda ($1,234), porcentaje (12.5 %) o número.
+ * modo: 'normal' (tooltips, tablas), 'compacto' (ejes) o 'cifra' (indicadores).
+ */
+export function fmtValor(v, formato, modo = 'normal') {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—'
+  if (formato === 'porcentaje') return `${modo === 'compacto' ? _uno.format(v) : _num.format(v)} %`
+  const base = modo === 'compacto' ? fmtCompacto(Math.abs(v)) : modo === 'cifra' ? fmtCifra(Math.abs(v)) : fmtNum(Math.abs(v))
+  const signo = v < 0 ? '−' : ''
+  return formato === 'moneda' ? `${signo}$${base}` : `${signo}${base}`
+}
 
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
-/** Etiqueta corta para un periodo del servidor ('2026-03' → 'mar 26'). Otras categorías pasan igual. */
+/** Etiqueta corta para un periodo del servidor ('2026-03' → 'mar 2026'). Otras categorías pasan igual. */
 export function etiquetaPeriodo(lbl, grano) {
   const s = String(lbl)
-  if (grano === 'mes' && /^\d{4}-\d{2}$/.test(s)) return `${MESES[Number(s.slice(5)) - 1]} ${s.slice(2, 4)}`
+  if (grano === 'mes' && /^\d{4}-\d{2}$/.test(s)) return `${MESES[Number(s.slice(5)) - 1]} ${s.slice(0, 4)}`
   if ((grano === 'dia' || grano === 'semana') && /^\d{4}-\d{2}-\d{2}$/.test(s)) return `${Number(s.slice(8))} ${MESES[Number(s.slice(5, 7)) - 1]}`
   return s
 }
@@ -184,7 +232,14 @@ export function etiquetaLarga(lbl, grano) {
   return s
 }
 
+/** '2025-11-10' → '10 nov 2025' */
+export function fechaCorta(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''))
+  return m ? `${Number(m[3])} ${MESES[Number(m[2]) - 1]} ${m[1]}` : String(iso || '')
+}
+
 export function colorSerie(i, nombre, fijo = null) {
+  if (nombre === SIN_DATO) return COLOR_SIN_DATO
   if (nombre === 'Otros') return COLOR_OTROS
   if (fijo !== null && fijo !== undefined) return PALETA[fijo % PALETA.length]
   return PALETA[i % PALETA.length]
@@ -212,6 +267,7 @@ export function cambiarTipo(w, tipo, columnas) {
   }
   if (out.x && out.x === out.y && tipo === 'calor') out.y = base.y
   if (w.agg && aggsPermitidas(tipo).includes(w.agg) && out.medida) out.agg = w.agg
+  if (out.medida && roles[out.medida] === 'calculada') out.agg = 'calc'
   if (!out.medida && TIPOS[tipo].aggs) out.agg = 'conteo'
   if (w.grano) out.grano = w.grano
   out.titulo = w.titulo && w.titulo !== tituloAutomatico(w) ? w.titulo : tituloAutomatico(out)
@@ -223,6 +279,6 @@ export function actualizarWidget(w, patch) {
   const nuevo = { ...w, ...patch }
   if (!('titulo' in patch) && (!w.titulo || w.titulo === tituloAutomatico(w))) nuevo.titulo = tituloAutomatico(nuevo)
   if (nuevo.tipo !== 'tabla' && 'medida' in patch && !nuevo.medida) nuevo.agg = 'conteo'
-  if ('medida' in patch && nuevo.medida && nuevo.agg === 'conteo' && TIPOS[nuevo.tipo].aggs) nuevo.agg = 'suma'
+  if ('medida' in patch && nuevo.medida && (nuevo.agg === 'conteo' || nuevo.agg === 'calc') && !('agg' in patch) && TIPOS[nuevo.tipo].aggs) nuevo.agg = 'suma'
   return nuevo
 }

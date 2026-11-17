@@ -2,8 +2,12 @@
 from core import storage
 from servicios.parquet import olvidar_parquet
 
+def ruta_original(archivo_id):
+    """Archivo tal como se subió (comprimido): permite corregir los tipos de columna después de guardar."""
+    return f"originales/{archivo_id}.src.gz"
+
 def rutas_de_archivo(archivo_id):
-    return (f"datasets/{archivo_id}.parquet", f"borradores/{archivo_id}.src")
+    return (f"datasets/{archivo_id}.parquet", f"borradores/{archivo_id}.src", ruta_original(archivo_id))
 
 def ruta_avatar(usuario_id):
     return f"avatares/{usuario_id}"

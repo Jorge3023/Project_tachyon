@@ -9,6 +9,8 @@ Configuración (JSON):
      "filtros": [<filtro>],
      "widgets": [{"id", "tipo", "titulo", "ancho", "x", "y", "medida", "agg", "serie", ...}]}
 Filtro: {"col", "desde"/"hasta" (fecha) | "min"/"max" (número) | "valores" (categoría)}
+Métrica calculada: {"nombre", "op", "a", "b"}. Se usa como "medida" de una gráfica por su nombre y se calcula sobre
+los totales de cada grupo (p. ej. suma(defectuosas) ÷ suma(producidas)), nunca fila por fila.
 """
 import math
 import re
@@ -16,6 +18,8 @@ import unicodedata
 
 import numpy as np
 import pandas as pd
+
+from servicios.detector import formato_por_nombre
 
 TIPOS = ("kpi", "linea", "area", "barras", "dona", "dispersion", "histograma", "calor", "pareto", "tabla", "mapa")
 AGGS = ("suma", "promedio", "conteo", "min", "max", "mediana", "unicos")
@@ -29,6 +33,11 @@ MAX_PUNTOS_DISPERSION = 1500
 MAX_PUNTOS_MAPA = 800
 MAX_BUCKETS = 3000
 SERIES_MAX = 6
+MAX_METRICAS = 10
+SIN_DATO = "(sin dato)"          # las filas sin valor en una categoría se muestran, no se esconden
+# Métricas calculadas: (descripción, ¿se acumula como una suma?)
+OPS = {"div": "A ÷ B", "pct": "A ÷ B en %", "resta": "A − B", "suma": "A + B", "margen": "(A − B) ÷ A en %"}
+TIPOS_CON_CALCULADA = ("kpi", "linea", "area", "barras", "calor")
 
 R_FECHA = ("fecha",)
 R_DIM = ("categoria", "estado", "identificador")
@@ -55,6 +64,8 @@ def _col(w, campo, roles, permitidos, obligatorio=False, etiqueta=None):
         return None
     if not isinstance(v, str) or v not in roles:
         raise ConfigInvalida(f"La columna «{str(v)[:40]}» no existe en este archivo")
+    if roles[v] == "calculada" and "calculada" not in permitidos:
+        raise ConfigInvalida(f"«{v}» es una métrica calculada: úsala en indicadores, líneas, área, barras o mapa de calor")
     if roles[v] not in permitidos:
         raise ConfigInvalida(f"«{v}» es de tipo {roles[v]} y aquí no se puede usar como {etiqueta or campo}")
     return v
@@ -89,13 +100,19 @@ def _numero(v):
     return f
 
 
-def limpiar_filtros(filtros, roles):
+def limpiar_filtros(filtros, roles, avisos=None):
     if filtros in (None, ""):
         return []
     if not isinstance(filtros, list) or len(filtros) > MAX_FILTROS:
         raise ConfigInvalida(f"Máximo {MAX_FILTROS} filtros")
     out = []
     for f in filtros:
+        if avisos is not None:                     # modo tolerante: un filtro que ya no encaja se quita y se avisa
+            try:
+                out += limpiar_filtros([f], roles)
+            except ConfigInvalida as e:
+                avisos.append(f"Se quitó un filtro: {e}")
+            continue
         if not isinstance(f, dict):
             raise ConfigInvalida("Filtro no válido")
         col = f.get("col")
@@ -120,9 +137,37 @@ def limpiar_filtros(filtros, roles):
     return out
 
 
-def _widget(w, roles, i, ids_usados):
+def _metricas(lista, roles):
+    """Valida las métricas calculadas: nombre propio, operación conocida y dos columnas numéricas."""
+    if lista in (None, ""):
+        return []
+    if not isinstance(lista, list) or len(lista) > MAX_METRICAS:
+        raise ConfigInvalida(f"Máximo {MAX_METRICAS} métricas calculadas")
+    out, nombres = [], set()
+    for m in lista:
+        if not isinstance(m, dict):
+            raise ConfigInvalida("Métrica calculada no válida")
+        nombre = " ".join(str(m.get("nombre") or "").split())[:40]
+        if not nombre:
+            raise ConfigInvalida("Ponle nombre a la métrica calculada")
+        if nombre in roles or nombre.lower() in nombres:
+            raise ConfigInvalida(f"Ya hay una columna o métrica llamada «{nombre}»")
+        if m.get("op") not in OPS:
+            raise ConfigInvalida("Operación no válida en una métrica calculada")
+        for campo in ("a", "b"):
+            v = m.get(campo)
+            if not isinstance(v, str) or roles.get(v) != "numero":
+                raise ConfigInvalida(f"La métrica «{nombre}» necesita dos columnas numéricas")
+        nombres.add(nombre.lower())
+        out.append({"nombre": nombre, "op": m["op"], "a": m["a"], "b": m["b"]})
+    return out
+
+
+def _widget(w, roles, i, ids_usados, roles_filtro=None):
     if not isinstance(w, dict):
         raise ConfigInvalida("Gráfica no válida")
+    roles_filtro = roles_filtro if roles_filtro is not None else roles
+    medibles = R_NUM + (("calculada",) if w.get("tipo") in TIPOS_CON_CALCULADA else ())
     tipo = w.get("tipo")
     if tipo not in TIPOS:
         raise ConfigInvalida(f"Tipo de gráfica no válido: {str(tipo)[:30]}")
@@ -134,28 +179,30 @@ def _widget(w, roles, i, ids_usados):
            "ancho": w.get("ancho") if w.get("ancho") in ANCHOS else (3 if tipo == "kpi" else 6)}
     color = w.get("color")
     out["color"] = color if isinstance(color, int) and not isinstance(color, bool) and 0 <= color <= 7 else None
-    out["filtros"] = limpiar_filtros(w.get("filtros"), roles)
+    out["filtros"] = limpiar_filtros(w.get("filtros"), roles_filtro)
     grano = w.get("grano", "auto")
     out["grano"] = grano if grano in GRANOS else "auto"
 
     def agg(permitidas=AGGS, defecto="suma"):
+        if roles.get(w.get("medida")) == "calculada":
+            return "calc"                            # la métrica calculada ya dice cómo se combina
         a = w.get("agg") or defecto
         if a not in permitidas:
             raise ConfigInvalida(f"Agregación no permitida aquí: {str(a)[:20]}")
         return a
 
     if tipo == "kpi":
-        out["medida"] = _col(w, "medida", roles, R_NUM, etiqueta="la métrica")
+        out["medida"] = _col(w, "medida", roles, medibles, etiqueta="la métrica")
         out["agg"] = agg(defecto="suma") if out["medida"] else "conteo"
         out["x"] = _col(w, "x", roles, R_FECHA, etiqueta="la fecha de comparación")
     elif tipo in ("linea", "area"):
         out["x"] = _col(w, "x", roles, R_FECHA + ("categoria", "estado"), True, "el eje X")
-        out["medida"] = _col(w, "medida", roles, R_NUM, etiqueta="la métrica")
+        out["medida"] = _col(w, "medida", roles, medibles, etiqueta="la métrica")
         out["agg"] = agg() if out["medida"] else "conteo"
         out["serie"] = _col(w, "serie", roles, ("categoria", "estado"), etiqueta="la serie")
     elif tipo == "barras":
         out["x"] = _col(w, "x", roles, R_FECHA + R_DIM, True, "el eje X")
-        out["medida"] = _col(w, "medida", roles, R_NUM, etiqueta="la métrica")
+        out["medida"] = _col(w, "medida", roles, medibles, etiqueta="la métrica")
         out["agg"] = agg() if out["medida"] else "conteo"
         out["serie"] = _col(w, "serie", roles, ("categoria", "estado"), etiqueta="la serie")
         out["apilado"] = bool(w.get("apilado"))
@@ -180,7 +227,7 @@ def _widget(w, roles, i, ids_usados):
         out["y"] = _col(w, "y", roles, R_DIM, True, "el eje Y")
         if out["x"] == out["y"]:
             raise ConfigInvalida("El mapa de calor necesita dos columnas distintas")
-        out["medida"] = _col(w, "medida", roles, R_NUM, etiqueta="la métrica")
+        out["medida"] = _col(w, "medida", roles, medibles, etiqueta="la métrica")
         out["agg"] = agg() if out["medida"] else "conteo"
         out["top"] = _entero(w.get("top"), 10, 2, 15)
     elif tipo == "mapa":
@@ -194,34 +241,81 @@ def _widget(w, roles, i, ids_usados):
     elif tipo == "tabla":
         cols = w.get("columnas")
         if not isinstance(cols, list) or not cols:
-            cols = list(roles)[:6]
+            cols = list(roles_filtro)[:6]
         cols = [c for c in cols if isinstance(c, str)]
-        if any(c not in roles for c in cols):
+        if any(c not in roles_filtro for c in cols):
             raise ConfigInvalida("La tabla usa una columna que no existe")
         out["columnas"] = cols[:10]
         out["filas"] = _entero(w.get("filas"), 10, 1, 50)
         orden = w.get("orden")
-        out["orden"] = orden if orden in roles else None
+        out["orden"] = orden if orden in roles_filtro else None
         out["dir"] = "asc" if w.get("dir") == "asc" else "desc"
     return out
 
 
-def limpiar_config(config, esquema):
-    """Devuelve la configuración saneada (solo claves conocidas) o lanza ConfigInvalida."""
+def limpiar_config(config, esquema, avisos=None):
+    """Devuelve la configuración saneada (solo claves conocidas) o lanza ConfigInvalida.
+    Con `avisos` (una lista) trabaja en modo tolerante: quita lo que ya no encaja con el archivo —p. ej. después
+    de cambiar el tipo de una columna— y anota qué quitó, en vez de rechazar toda la vista."""
     if not isinstance(config, dict):
         raise ConfigInvalida("Configuración no válida")
     roles = _roles(esquema)
     widgets = config.get("widgets", [])
     if not isinstance(widgets, list) or len(widgets) > MAX_WIDGETS:
         raise ConfigInvalida(f"Máximo {MAX_WIDGETS} gráficas por vista")
+    if avisos is None:
+        metricas = _metricas(config.get("metricas"), roles)
+    else:
+        metricas = []
+        for m in (config.get("metricas") or [])[:MAX_METRICAS] if isinstance(config.get("metricas"), list) else []:
+            try:
+                metricas += _metricas([m], {**roles, **{x["nombre"]: "calculada" for x in metricas}})
+            except ConfigInvalida as e:
+                avisos.append(f"Se quitó la métrica «{str((m or {}).get('nombre', ''))[:40]}»: {e}")
+    roles_w = {**roles, **{m["nombre"]: "calculada" for m in metricas}}
     ids = set()
     grano = config.get("grano", "auto")
-    return {"v": 1, "grano": grano if grano in GRANOS else "auto",
-            "filtros": limpiar_filtros(config.get("filtros"), roles),
-            "widgets": [_widget(w, roles, i, ids) for i, w in enumerate(widgets)]}
+    if avisos is None:
+        ws = [_widget(w, roles_w, i, ids, roles) for i, w in enumerate(widgets)]
+    else:
+        ws = []
+        for i, w in enumerate(widgets):
+            try:
+                ws.append(_widget(w, roles_w, i, ids, roles))
+            except ConfigInvalida as e:
+                titulo = str((w or {}).get("titulo") or "") if isinstance(w, dict) else ""
+                avisos.append(f"Se quitó la gráfica «{titulo[:60] or 'sin título'}»: {e}")
+    out = {"v": 1, "grano": grano if grano in GRANOS else "auto",
+           "filtros": limpiar_filtros(config.get("filtros"), roles, avisos), "widgets": ws}
+    if metricas:
+        out["metricas"] = metricas
+    return out
+
+
+def renombrar_columnas(config, mapa):
+    """Cambia los nombres de columna usados en una configuración (sin validarla). mapa: {nombre_viejo: nombre_nuevo}."""
+    if not mapa or not isinstance(config, dict):
+        return config
+    r = lambda v: mapa.get(v, v) if isinstance(v, str) else v
+    def filtros(fs):
+        return [{**f, "col": r(f.get("col"))} if isinstance(f, dict) else f for f in (fs or [])] if isinstance(fs, list) else fs
+    out = {**config, "filtros": filtros(config.get("filtros"))}
+    if isinstance(config.get("metricas"), list):
+        out["metricas"] = [{**m, "a": r(m.get("a")), "b": r(m.get("b"))} if isinstance(m, dict) else m for m in config["metricas"]]
+    ws = []
+    for w in config.get("widgets") or []:
+        if isinstance(w, dict):
+            w = {**w, **{k: r(w[k]) for k in ("x", "y", "lat", "lon", "medida", "serie", "orden") if k in w},
+                 "filtros": filtros(w.get("filtros"))}
+            if isinstance(w.get("columnas"), list):
+                w["columnas"] = [r(c) for c in w["columnas"]]
+        ws.append(w)
+    out["widgets"] = ws
+    return out
 
 
 def columnas_usadas(config):
+    calc = {m["nombre"]: m for m in config.get("metricas", [])}
     cols = set()
     for f in config["filtros"]:
         cols.add(f["col"])
@@ -230,7 +324,10 @@ def columnas_usadas(config):
             cols.add(f["col"])
         for campo in ("x", "y", "lat", "lon", "medida", "serie", "orden"):
             if w.get(campo):
-                cols.add(w[campo])
+                if w[campo] in calc:
+                    cols.update((calc[w[campo]]["a"], calc[w[campo]]["b"]))
+                else:
+                    cols.add(w[campo])
         cols.update(w.get("columnas", []))
     return sorted(cols)
 
@@ -280,7 +377,10 @@ def aplicar_filtros(df, filtros, roles):
             if f.get("max") is not None:
                 mask &= s <= f["max"]
         else:
-            mask &= s.notna() & s.astype(str).isin(f["valores"])
+            m = s.notna() & s.astype(str).isin(f["valores"])
+            if SIN_DATO in f["valores"]:
+                m |= s.isna()
+            mask &= m
     return df[mask]
 
 
@@ -336,7 +436,12 @@ def _clave(df, col, roles, grano_global, grano_w):
             if len(completas) > MAX_BUCKETS:
                 raise ConfigInvalida("Demasiados periodos: elige una granularidad más amplia (semana, mes…)")
         return claves, completas, grano
-    return df[col].astype("string").where(df[col].notna()), None, None
+    return _categorias(df[col]), None, None
+
+
+def _categorias(serie):
+    """Claves de texto de una columna de categoría; las celdas vacías cuentan como «(sin dato)»."""
+    return serie.astype("string").fillna(SIN_DATO)
 
 
 def _agregar(df, claves, medida, agg):
@@ -367,12 +472,59 @@ def _valor_total(df, medida, agg):
 
 
 def _top_con_otros(claves, n, otros="Otros"):
-    """Serie de claves donde las menos frecuentes (más allá de n) pasan a 'Otros'."""
-    cuenta = claves.value_counts()
+    """Serie de claves donde las menos frecuentes (más allá de n) pasan a 'Otros'. «(sin dato)» nunca se mezcla
+    con «Otros»: así se ve cuánto falta."""
+    cuenta = claves.value_counts().drop(SIN_DATO, errors="ignore")
     if len(cuenta) <= n:
         return claves, False
-    mantener = set(cuenta.head(n).index)
+    mantener = set(cuenta.head(n).index) | {SIN_DATO}
     return claves.where(claves.isin(mantener) | claves.isna(), otros), True
+
+
+def _combinar(a, b, op):
+    """Combina los totales A y B de cada grupo según la operación de una métrica calculada."""
+    a, b = a.astype("float64"), b.astype("float64")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        if op == "suma":
+            r = a + b
+        elif op == "resta":
+            r = a - b
+        elif op == "div":
+            r = a / b.where(b != 0)
+        elif op == "pct":
+            r = a / b.where(b != 0) * 100
+        else:                                        # margen
+            r = (a - b) / a.where(a != 0) * 100
+    return r.replace([np.inf, -np.inf], np.nan)
+
+
+def _agregar_w(df, claves, w):
+    """Como _agregar, pero entiende las métricas calculadas de la gráfica."""
+    c = w.get("_calc")
+    if not c:
+        return _agregar(df, claves, w.get("medida"), w["agg"])
+    sa, sb = _agregar(df, claves, c["a"], "suma"), _agregar(df, claves, c["b"], "suma")
+    sa, sb = sa.align(sb, join="outer")
+    return _combinar(sa.fillna(0), sb.fillna(0), c["op"])
+
+
+def _total_w(df, w):
+    c = w.get("_calc")
+    if not c:
+        return _valor_total(df, w.get("medida"), w["agg"])
+    a, b = _valor_total(df, c["a"], "suma"), _valor_total(df, c["b"], "suma")
+    if a is None and b is None:
+        return None
+    v = _combinar(pd.Series([a or 0.0]), pd.Series([b or 0.0]), c["op"]).iloc[0]
+    return None if pd.isna(v) else float(v)
+
+
+def _acumula(w):
+    """¿El valor de un periodo crece con los días? (suma, conteo…). Un periodo a medias saldría «a la baja»."""
+    c = w.get("_calc")
+    if c:
+        return c["op"] in ("suma", "resta")
+    return w["agg"] in ("suma", "conteo", "unicos")
 
 
 _FREC_PERIODO = {"semana": "W-SUN", "mes": "M", "trimestre": "Q", "anio": "Y"}
@@ -384,19 +536,21 @@ def _periodo_incompleto(s, grano):
     v = s.dropna()
     if f is None or v.empty:
         return False
+    if grano in ("mes", "trimestre", "anio") and bool((v.dt.day == 1).all()) and bool((v.dt.normalize() == v).all()):
+        return False                     # datos mensuales (una fecha por mes, el día 1): cada mes ya está completo
     ultimo = v.max()
     return ultimo.normalize() < pd.Period(ultimo, freq=f).end_time.normalize()
 
 
 def _calc_kpi(df, w, roles, gg):
-    valor = _valor_total(df, w["medida"], w["agg"])
+    valor = _total_w(df, w)
     delta = None
     if w.get("x") and len(df):
         clave, completas, grano = _clave(df, w["x"], roles, gg, w["grano"])
-        ser = _agregar(df, [clave], w["medida"], w["agg"])
+        ser = _agregar_w(df, [clave], w)
         if completas:
             ser = ser.reindex(completas)
-        acumula = w["agg"] in ("suma", "conteo", "unicos")
+        acumula = _acumula(w)
         ser = ser.fillna(0) if acumula else ser.dropna()
         # Si el último periodo aún no termina (p. ej. el mes en curso), una suma/conteo parcial
         # saldría siempre "a la baja": se compara el último periodo COMPLETO contra el anterior.
@@ -415,29 +569,29 @@ def _calc_kpi(df, w, roles, gg):
 
 def _calc_serie_cat(df, w, roles, gg):
     """líneas / área / barras: categorías en X y una o varias series."""
-    x, medida, agg = w["x"], w["medida"], w["agg"]
+    x = w["x"]
     claves, completas, grano = _clave(df, x, roles, gg, w["grano"])
     es_tiempo = roles[x] == "fecha"
     adv = None
     serie_col = w.get("serie")
     if serie_col:
-        sk, recortado = _top_con_otros(df[serie_col].astype("string").where(df[serie_col].notna()), SERIES_MAX)
-        ser = _agregar(df, [claves, sk], medida, agg)
+        sk, recortado = _top_con_otros(_categorias(df[serie_col]), SERIES_MAX)
+        ser = _agregar_w(df, [claves, sk], w)
         if ser.empty:
             return {"categorias": [], "series": [], "grano": grano}
         tabla = ser.unstack(level=1)
         if recortado:
             adv = f"Se muestran las {SERIES_MAX} series principales; el resto va en «Otros»."
         nombres = list(tabla.columns)
-        total = _agregar(df, [claves], medida, agg)
+        total = _agregar_w(df, [claves], w)
     else:
-        ser = _agregar(df, [claves], medida, agg)
+        ser = _agregar_w(df, [claves], w)
         tabla = ser.to_frame(name=w["titulo"] or "Valor") if len(ser) else pd.DataFrame()
         nombres = list(tabla.columns)
         total = ser
     if tabla.empty:
         return {"categorias": [], "series": [], "grano": grano}
-    relleno = 0.0 if agg in ("suma", "conteo", "unicos") else None
+    relleno = 0.0 if _acumula(w) else None
     if es_tiempo and completas:
         tabla = tabla.reindex(completas)
         if relleno is not None:
@@ -460,15 +614,20 @@ def _calc_serie_cat(df, w, roles, gg):
         elif w["tipo"] in ("linea", "area") and not es_tiempo and len(orden_cat) > 40:
             orden_cat = orden_cat[:40]; tabla = tabla.reindex(orden_cat)
             adv = "Mostrando las primeras 40 categorías."
-    return {"categorias": [str(c) for c in orden_cat],
-            "series": [{"nombre": str(n), "valores": [_n(v) for v in tabla[n].tolist()]} for n in nombres],
-            "grano": grano, "advertencia": adv}
+    out = {"categorias": [str(c) for c in orden_cat],
+           "series": [{"nombre": str(n), "valores": [_n(v) for v in tabla[n].tolist()]} for n in nombres],
+           "grano": grano, "advertencia": adv}
+    # El último periodo puede estar a medias (los datos llegan al 10 de noviembre): se marca para no leerlo como caída
+    if es_tiempo and completas and len(orden_cat) >= 2 and _acumula(w) and _periodo_incompleto(df[x], grano):
+        out["parcial"] = str(orden_cat[-1])
+        out["parcial_hasta"] = df[x].max().strftime("%Y-%m-%d")
+    return out
 
 
 def _calc_reparto(df, w, roles, gg):
     """dona / pareto."""
     x = w["x"]
-    claves = df[x].astype("string").where(df[x].notna())
+    claves = _categorias(df[x])
     if w["tipo"] == "dona":
         claves, recortado = _top_con_otros(claves, w["top"])
     else:
@@ -478,8 +637,9 @@ def _calc_reparto(df, w, roles, gg):
         return {"total": 0, "partes": [] if w["tipo"] == "dona" else None, "categorias": []}
     total = float(ser.sum())
     if w["tipo"] == "dona":
-        if "Otros" in ser.index:                       # "Otros" siempre al final
-            ser = pd.concat([ser.drop("Otros"), ser[["Otros"]]])
+        for ultimo in ("Otros", SIN_DATO):              # «Otros» y «(sin dato)» siempre al final
+            if ultimo in ser.index:
+                ser = pd.concat([ser.drop(ultimo), ser[[ultimo]]])
         return {"total": _n(total), "partes": [
             {"nombre": str(k), "valor": _n(v), "pct": _n(v / total * 100, 2) if total else 0} for k, v in ser.items()],
             "advertencia": f"Se muestran las {w['top']} principales; el resto va en «Otros»." if recortado else None}
@@ -503,7 +663,7 @@ def _calc_dispersion(df, w, roles, gg):
         d = d.sample(MAX_PUNTOS_DISPERSION, random_state=7)
     nombres, idx = ["Todos"], np.zeros(len(d), dtype=int)
     if w.get("serie"):
-        sk, _ = _top_con_otros(d[w["serie"]].astype("string").fillna("(vacío)"), 2)
+        sk, _ = _top_con_otros(_categorias(d[w["serie"]]), 2)
         cat = pd.Categorical(sk)
         nombres, idx = [str(c) for c in cat.categories], cat.codes
     pts = [[_n(a, 4), _n(b, 4), int(s)] for a, b, s in zip(d[w["x"]], d[w["y"]], idx)]
@@ -529,7 +689,7 @@ def _calc_mapa(df, w, roles, gg):
     # color por categoría (las menos frecuentes pasan a «Otros»)
     nombres, cod = [], None
     if ser:
-        sk, _ = _top_con_otros(d[ser].astype("string").fillna("(vacío)"), SERIES_MAX)
+        sk, _ = _top_con_otros(_categorias(d[ser]), SERIES_MAX)
         cat = pd.Categorical(sk)
         nombres, cod = [str(c) for c in cat.categories], pd.Series(cat.codes, index=d.index)
     # celda más fina con la que no se pasa del máximo de puntos
@@ -579,8 +739,8 @@ def _calc_histograma(df, w, roles, gg):
 
 def _calc_calor(df, w, roles, gg):
     cx, completas, grano = _clave(df, w["x"], roles, gg, w["grano"])
-    cy = df[w["y"]].astype("string").where(df[w["y"]].notna())
-    ser = _agregar(df, [cx, cy], w["medida"], w["agg"])
+    cy = _categorias(df[w["y"]])
+    ser = _agregar_w(df, [cx, cy], w)
     if ser.empty:
         return {"filas": [], "columnas": [], "valores": []}
     tabla = ser.unstack(level=1)
@@ -613,17 +773,53 @@ _CALC = {"kpi": _calc_kpi, "linea": _calc_serie_cat, "area": _calc_serie_cat, "b
          "histograma": _calc_histograma, "calor": _calc_calor, "tabla": _calc_tabla, "mapa": _calc_mapa}
 
 
+def formatos(esquema):
+    """{columna: 'moneda' | 'porcentaje' | None}. Los archivos guardados antes de la v2 no lo traen: se deduce del nombre."""
+    out = {}
+    for c in esquema:
+        if c.get("rol") != "numero":
+            continue
+        f = c["formato"] if "formato" in c else formato_por_nombre(c["nombre"])
+        out[c["nombre"]] = f if f in ("moneda", "porcentaje") else None
+    return out
+
+
+def _formato_medida(w, fmts):
+    m = w.get("medida")
+    if not m or w.get("agg") in ("conteo", "unicos"):
+        return None
+    c = w.get("_calc")
+    if c:
+        return "porcentaje" if c["op"] in ("pct", "margen") else (None if c["op"] == "div" else fmts.get(c["a"]))
+    return fmts.get(m)
+
+
+def _con_formato(r, w, fmts):
+    if w["tipo"] == "dispersion":
+        r["formato_x"], r["formato_y"] = fmts.get(w["x"]), fmts.get(w["y"])
+    elif w["tipo"] == "histograma":
+        r["formato"] = fmts.get(w["x"])
+    elif w["tipo"] == "tabla":
+        r["formatos"] = [fmts.get(c) for c in w["columnas"]]
+    else:
+        r["formato"] = _formato_medida(w, fmts)
+    return r
+
+
 def calcular(df, config, esquema):
     """Calcula todas las gráficas de una configuración ya saneada. Un error en una gráfica no tumba a las demás."""
     roles = _roles(esquema)
+    fmts = formatos(esquema)
+    calc = {m["nombre"]: m for m in config.get("metricas", [])}
     base = aplicar_filtros(df, config["filtros"], roles)
     out = {}
     for w in config["widgets"]:
         try:
             d = aplicar_filtros(base, w["filtros"], roles)
+            w = {**w, "_calc": calc.get(w.get("medida"))}
             r = _CALC[w["tipo"]](d, w, roles, config["grano"])
             r.setdefault("n", int(len(d)))
-            out[w["id"]] = r
+            out[w["id"]] = _con_formato(r, w, fmts)
         except ConfigInvalida as e:
             out[w["id"]] = {"error": str(e)}
         except Exception:
@@ -640,16 +836,22 @@ def valores_columna(serie, rol):
         return {"tipo": "fecha", "min": s.min().strftime("%Y-%m-%d") if len(s) else None,
                 "max": s.max().strftime("%Y-%m-%d") if len(s) else None}
     cuenta = s.astype(str).value_counts()
-    return {"tipo": "categoria", "unicos": int(len(cuenta)),
-            "valores": [{"valor": k, "n": int(v)} for k, v in cuenta.head(100).items()]}
+    valores = [{"valor": k, "n": int(v)} for k, v in cuenta.head(100).items()]
+    vacias = int(serie.isna().sum())
+    if vacias:
+        valores.append({"valor": SIN_DATO, "n": vacias})
+    return {"tipo": "categoria", "unicos": int(len(cuenta)), "valores": valores}
 
 
 # ── Sugerencia automática según los roles de las columnas ────────────────────────────────────────────
-_NOMBRES_MEDIA = re.compile(r"(precio|promedio|tasa|porcentaje|%|ratio|edad|calif|score|temperatura|tiempo|ticket)", re.I)
-# Qué columna numérica se toma como "la métrica principal": importes antes que cantidades, promedios al final
+# Medidas que se promedian, no se suman (sumar precios, porcentajes o calificaciones no significa nada)
+_NOMBRES_MEDIA = re.compile(r"(precio|promedio|tasa|porcentaje|%|ratio|edad|calif|score|temperatura|ciclo|ticket|"
+                            r"unitari|unit\.|antig|nps|satisfac|puntua|puntaje|rating|evaluac|escala|humedad|velocidad|"
+                            r"presi[oó]n|duraci[oó]n)", re.I)
+# Qué columna numérica se toma como "la métrica principal": importes antes que cantidades
 _PRIORIDAD = [re.compile(r"(importe|monto|venta|ingreso|revenue|sales|amount|total)", re.I),
               re.compile(r"(costo|cost|gasto|valor|pago)", re.I),
-              re.compile(r"(cantidad|qty|unidades|piezas|volumen)", re.I)]
+              re.compile(r"(cantidad|qty|unidades|piezas|volumen|producid)", re.I)]
 
 
 def _puntaje(nombre):
@@ -659,6 +861,39 @@ def _puntaje(nombre):
         if rx.search(nombre):
             return i
     return len(_PRIORIDAD)
+
+
+def agg_natural(nombre, info=None, formato=None):
+    """'promedio' para precios, porcentajes, tiempos de ciclo, calificaciones…; 'suma' para importes y cantidades."""
+    if formato == "porcentaje" or _NOMBRES_MEDIA.search(nombre):
+        return "promedio"
+    info = info or {}
+    escala = (info.get("enteros") and info.get("min") is not None and 0 <= info["min"] and info.get("max", 99) <= 10
+              and (info.get("unicos") or 99) <= 11)
+    if escala and not any(rx.search(nombre) for rx in _PRIORIDAD):
+        return "promedio"                            # calificación de 1 a 5, de 0 a 10…
+    return "suma"
+
+
+_RX_DEFECTO = re.compile(r"(defect|rechaz|scrap|merma|falla|fallid|mala|\bng\b|reproceso|devuel|error)", re.I)
+_RX_BASE_TASA = re.compile(r"(produc|fabricad|inspecci|procesad|entregad|vendid|recibid|total)", re.I)
+_RX_INGRESO = re.compile(r"(importe|venta|ingreso|revenue|sales|factur)", re.I)
+_RX_COSTO = re.compile(r"(costo|cost)", re.I)
+
+
+def metricas_sugeridas(sumables, nombres_columnas):
+    """Métricas calculadas evidentes: tasa de defectos (defectuosas ÷ producidas) y margen ((ventas − costo) ÷ ventas)."""
+    out = []
+    usados = {n.lower() for n in nombres_columnas}
+    a = next((n for n in sumables if _RX_DEFECTO.search(n)), None)
+    b = next((n for n in sumables if n != a and _RX_BASE_TASA.search(n) and not _RX_DEFECTO.search(n)), None)
+    if a and b and f"% {a}".lower() not in usados:
+        out.append({"nombre": f"% {a}"[:40], "op": "pct", "a": a, "b": b})
+    ing = next((n for n in sumables if _RX_INGRESO.search(n) and not _RX_COSTO.search(n)), None)
+    cos = next((n for n in sumables if _RX_COSTO.search(n) and not re.search(r"unit", n, re.I)), None)
+    if ing and cos and not any("margen" in n for n in usados):
+        out.append({"nombre": "Margen %", "op": "margen", "a": ing, "b": cos})
+    return out
 
 
 _RX_LAT = re.compile(r"^(lat|latitud|latitude|latitu)$", re.I)
@@ -682,61 +917,203 @@ def columnas_geo(esquema, resumen):
     return (la, lo) if la and lo else (None, None)
 
 
-def sugerir(esquema, resumen):
-    """Dashboard propuesto: indicadores + las gráficas que mejor encajan con los tipos de columna detectados."""
+def _acomodar(ws):
+    """Anchos que llenan cada fila de 12 columnas: sin huecos al final de una fila."""
+    kpis = [w for w in ws if w["tipo"] == "kpi"]
+    ancho_kpi = {1: 12, 2: 6, 3: 4}.get(len(kpis), 3)
+    for w in kpis:
+        w["ancho"] = ancho_kpi
+    fila, ultimo = 0, None
+    for w in ws:
+        if w["tipo"] == "kpi":
+            continue
+        if fila + w["ancho"] > 12:
+            if ultimo is not None and fila < 12:
+                ultimo["ancho"] += 12 - fila
+            fila = 0
+        fila += w["ancho"]
+        ultimo = w
+        if fila == 12:
+            fila, ultimo = 0, None
+    if ultimo is not None and 0 < fila < 12:
+        ultimo["ancho"] += 12 - fila
+    for w in ws:
+        if w["ancho"] not in ANCHOS:
+            w["ancho"] = min(a for a in ANCHOS if a >= w["ancho"])
+    return ws
+
+
+_RX_TITULAR = re.compile(r"(satisfac|nps|general|calificaci|puntua|global|total)", re.I)
+
+
+def _texto_largo(info):
+    """Una «categoría» cuyos valores son frases (comentarios, observaciones) no sirve para agrupar gráficas."""
+    top = [t.get("valor", "") for t in (info or {}).get("top", [])]
+    return bool(top) and sum(len(str(t)) for t in top) / len(top) > 22
+
+
+def _dim_que_mas_varia(df, metrica, candidatos):
+    """La categoría donde la métrica calculada cambia más entre grupos (p. ej. la línea con más defectos)."""
+    mejor, mejor_v = None, -1.0
+    w = {"medida": metrica["nombre"], "agg": "calc", "_calc": metrica}
+    for d in candidatos:
+        try:
+            cuenta = df[d].value_counts()
+            grupos = set(cuenta[cuenta >= max(5, len(df) * 0.01)].index.astype(str))
+            r = _agregar_w(df, [_categorias(df[d])], w)
+            r = r[r.index.isin(grupos)].dropna()
+        except Exception:
+            continue
+        if len(r) >= 2:
+            centro = abs(float(r.median())) or 1.0
+            v = float(r.max() - r.min()) / centro
+            if v > mejor_v:
+                mejor, mejor_v = d, v
+    return mejor
+
+
+def sugerir(esquema, resumen, df=None):
+    """Dashboard propuesto: indicadores + las gráficas que mejor cuentan algo con los tipos de columna detectados.
+
+    Reglas: se suma lo que se acumula (importes, cantidades) y se promedia lo demás (precios, porcentajes,
+    calificaciones); las razones evidentes (defectuosas ÷ producidas, margen) se proponen como métricas calculadas;
+    cada categoría aparece una vez; no se cruzan categorías que son la misma información (Ciudad → Región) ni se
+    grafican relaciones obvias (r ≈ 1)."""
     res = {r["nombre"]: r for r in (resumen or [])}
+    fmts = formatos(esquema)
     cols = [c for c in esquema if c.get("rol") != "ignorar"]
     fechas = [c["nombre"] for c in cols if c["rol"] == "fecha"]
+    f0 = fechas[0] if fechas else None
     lat, lon = columnas_geo(esquema, resumen)
-    nums = sorted([c["nombre"] for c in cols if c["rol"] == "numero" and c["nombre"] not in (lat, lon)], key=_puntaje)   # estable
-    dims = [c["nombre"] for c in cols if c["rol"] in ("categoria", "estado")]
+    nums = sorted([c["nombre"] for c in cols if c["rol"] == "numero" and c["nombre"] not in (lat, lon)], key=_puntaje)
+    aggs = {n: agg_natural(n, res.get(n), fmts.get(n)) for n in nums}
+    sumables = [n for n in nums if aggs[n] == "suma"]
+    promedios = sorted([n for n in nums if aggs[n] == "promedio"], key=lambda n: 0 if _RX_TITULAR.search(n) else 1)
+    metricas = metricas_sugeridas(sumables, [c["nombre"] for c in esquema])
 
     def card(n):
         return res.get(n, {}).get("unicos") or 0
-    bajas = [d for d in dims if 2 <= card(d) <= 8]                # pocas categorías → circular / series
-    altas = [d for d in dims if card(d) > 8]                       # muchas → barras / Pareto
+    dims = [c["nombre"] for c in cols if c["rol"] in ("categoria", "estado") and card(c["nombre"]) >= 2
+            and not _texto_largo(res.get(c["nombre"]))]
+    if df is not None and len(df):            # una categoría casi vacía («Causa de paro» con 88 % sin dato) no sirve de eje
+        dims = [d for d in dims if d not in df.columns or df[d].isna().mean() <= 0.5]
+    # Datos ya resumidos por periodo (una fila por mes): contar registros no dice nada
+    por_periodo = bool(df is not None and f0 in getattr(df, "columns", []) and len(df) >= 3
+                       and df[f0].dropna().dt.to_period("M").is_unique)
+    estados = [c["nombre"] for c in cols if c["rol"] == "estado" and 2 <= card(c["nombre"]) <= 8]
+    categorias = [d for d in dims if d not in estados]
+    determina = {n: set(res.get(n, {}).get("determina") or []) for n in dims}
+    jerarquicas = lambda a, b: b in determina.get(a, ()) or a in determina.get(b, ())
+
+    # Métrica principal: el primer importe/cantidad; si todo se promedia (una encuesta), la primera calificación
+    m1 = sumables[0] if sumables else (promedios[0] if promedios else None)
+    a1 = aggs.get(m1, "conteo")
     ws, n = [], [0]
 
     def add(**kw):
         n[0] += 1
-        ws.append({"id": f"w{n[0]}", **kw})
+        ws.append({"id": f"w{n[0]}", "ancho": 6, **kw})
 
-    add(tipo="kpi", titulo="Registros", agg="conteo", ancho=3, x=fechas[0] if fechas else None)
-    for m in nums[:3]:
-        a = "promedio" if _NOMBRES_MEDIA.search(m) else "suma"
-        add(tipo="kpi", titulo=f"{'Promedio' if a == 'promedio' else 'Total'} de {m}", medida=m, agg=a, ancho=3,
-            x=fechas[0] if fechas else None)
-    m1 = nums[0] if nums else None
-    agg1 = ("promedio" if m1 and _NOMBRES_MEDIA.search(m1) else "suma") if m1 else "conteo"
-    if fechas:
-        add(tipo="linea", titulo=f"{m1 or 'Registros'} por periodo", x=fechas[0], medida=m1,
-            agg=agg1, ancho=12 if not bajas else 8, color=0)
-    for d in bajas[:2]:
-        add(tipo="dona", titulo=f"{(m1 + ' por ') if m1 and agg1 == 'suma' else 'Registros por '}{d}", x=d,
-            medida=m1 if agg1 == "suma" else None, agg="suma" if (m1 and agg1 == "suma") else "conteo", ancho=4, top=6)
-    if altas:
-        d = altas[0]
-        add(tipo="barras", titulo=f"{m1 or 'Registros'} por {d}", x=d, medida=m1, agg=agg1, orientacion="h", top=10,
-            orden="desc", ancho=6, color=0)
-        if card(d) > 10 and agg1 in ("suma",):
-            add(tipo="pareto", titulo=f"Pareto de {m1} por {d}", x=d, medida=m1, agg="suma", top=10, ancho=6)
-    elif bajas and not fechas:
-        d = bajas[0]
-        add(tipo="barras", titulo=f"{m1 or 'Registros'} por {d}", x=d, medida=m1, agg=agg1, orden="desc", ancho=6, color=0)
-    if len(nums) >= 2:
-        add(tipo="dispersion", titulo=f"{nums[0]} vs {nums[1]}", x=nums[0], y=nums[1],
-            serie=bajas[0] if bajas and card(bajas[0]) <= 3 else None, ancho=6)
-    if m1:
-        add(tipo="histograma", titulo=f"Distribución de {m1}", x=m1, ancho=6, color=0)
-    pares = [d for d in dims if 2 <= card(d) <= 12]
-    if len(pares) >= 2:
-        add(tipo="calor", titulo=f"{pares[0]} × {pares[1]}", x=pares[0], y=pares[1], medida=m1 if agg1 == "suma" else None,
-            agg="suma" if (m1 and agg1 == "suma") else "conteo", ancho=6)
-    elif fechas and pares:
-        add(tipo="calor", titulo=f"{pares[0]} por periodo", x=fechas[0], y=pares[0], grano="mes", ancho=6)
+    def nombre_agg(m, a):
+        return f"{'Promedio' if a == 'promedio' else 'Total'} de {m}"
+
+    # 1. Indicadores: registros, dos totales y una razón (o un promedio)
+    if not por_periodo:
+        add(tipo="kpi", titulo="Registros", agg="conteo", x=f0)
+    for m in sumables[:2 if not por_periodo else 3]:
+        add(tipo="kpi", titulo=nombre_agg(m, "suma"), medida=m, agg="suma", x=f0)
+    extra = [mt["nombre"] for mt in metricas] + promedios
+    for m in extra[: 4 - len(ws)]:
+        es_calc = any(mt["nombre"] == m for mt in metricas)
+        add(tipo="kpi", titulo=m if es_calc else nombre_agg(m, "promedio"), medida=m,
+            agg="calc" if es_calc else "promedio", x=f0)
+
+    # 2. Evolución en el tiempo
+    usadas = set()
+    reparto = estados[0] if estados else next((d for d in categorias if 2 <= card(d) <= 6), None)
+    if f0:
+        add(tipo="linea", titulo=f"{(nombre_agg(m1, a1) if a1 == 'promedio' else m1) if m1 else 'Registros'} en el tiempo",
+            x=f0, medida=m1, agg=a1, ancho=8 if reparto else 12, color=0)
+    # 3. Reparto: un estado (Entregado / Cancelado…) se cuenta; una categoría corta se reparte por la métrica
+    if reparto:
+        usadas.add(reparto)
+        por_suma = m1 and a1 == "suma" and reparto not in estados
+        add(tipo="dona", titulo=f"{m1 if por_suma else 'Registros'} por {reparto}", x=reparto,
+            medida=m1 if por_suma else None, agg="suma" if por_suma else "conteo", ancho=4, top=6)
+    # 4. La razón calculada por la categoría que mejor la explica (p. ej. % defectuosas por línea)
+    d_calc = None
+    if metricas:
+        cand = [d for d in categorias if 2 <= card(d) <= 30]
+        d = _dim_que_mas_varia(df, metricas[0], [x for x in cand if card(x) <= 12] or cand) if df is not None else None
+        d = d or next((x for x in cand if card(x) <= 12 and x not in usadas), None) or next(iter(cand), None)
+        if d:
+            usadas.add(d); d_calc = d
+            mt = metricas[0]["nombre"]
+            add(tipo="barras", titulo=f"{mt} por {d}", x=d, medida=mt, agg="calc", orden="desc", top=12,
+                orientacion="h" if card(d) > 6 else "v", color=1)
+    # 5. Rankings por las demás categorías (cada una una vez)
+    # Una tasa o margen también en el tiempo (o un porcentaje que se promedia)
+    seg = metricas[0]["nombre"] if metricas else next((m for m in promedios if fmts.get(m) == "porcentaje" and m != m1), None)
+    if f0 and seg:
+        add(tipo="linea", titulo=f"{seg} en el tiempo", x=f0, medida=seg, agg="calc" if metricas else "promedio", color=1)
+    # Rankings: primero las categorías con unos 10 valores; al final las que repiten información ya graficada
+    # (Región cuando ya está Ciudad, Categoría cuando ya está Producto). Se eligen de una en una.
+    redundante = lambda d: any(d in determina.get(u, ()) for u in usadas)
+    elegidas = []
+    for _ in range(3):
+        libres = [d for d in categorias if d not in usadas]
+        if not libres:
+            break
+        d = min(libres, key=lambda d: (redundante(d), card(d) > 60, abs(math.log(max(card(d), 1) / 10))))
+        usadas.add(d); elegidas.append(d)
+    paretos = 0
+    for d in elegidas:
+        if card(d) > 15 and m1 and a1 == "suma" and not paretos:
+            paretos += 1
+            add(tipo="pareto", titulo=f"{m1} por {d}: los principales", x=d, medida=m1, agg="suma", top=10)
+        else:
+            add(tipo="barras", titulo=f"{(nombre_agg(m1, a1) if a1 == 'promedio' else m1) if m1 else 'Registros'} por {d}",
+                x=d, medida=m1, agg=a1 if m1 else "conteo", orden="desc", top=10,
+                orientacion="h" if card(d) > 6 else "v", color=0)
+    # 6. Calor: una categoría corta a lo largo del tiempo (o dos categorías que no sean la misma información)
+    cortas = [d for d in dims if 2 <= card(d) <= 12]
+    if f0 and d_calc and card(d_calc) <= 12:
+        mt = metricas[0]["nombre"]
+        add(tipo="calor", titulo=f"{mt} por {d_calc} y periodo", x=f0, y=d_calc, grano="mes", medida=mt, agg="calc")
+    elif f0 and cortas:
+        d = cortas[0]
+        add(tipo="calor", titulo=f"{(nombre_agg(m1, a1) if a1 == 'promedio' else m1) if m1 else 'Registros'} por {d} y periodo",
+            x=f0, y=d, grano="mes", medida=m1, agg=a1 if m1 else "conteo")
+    else:
+        par = next(((a, b) for a in cortas for b in cortas if a < b and not jerarquicas(a, b)), None)
+        if par:
+            add(tipo="calor", titulo=f"{par[0]} × {par[1]}", x=par[0], y=par[1],
+                medida=m1 if a1 == "suma" else None, agg="suma" if (m1 and a1 == "suma") else "conteo")
+    # 7. Relación entre dos medidas, solo si no es obvia (|r| entre 0.3 y 0.9)
+    par = None
+    for x in nums[:5]:
+        for y in nums[:5]:
+            r = (res.get(x, {}).get("corr") or {}).get(y)
+            if x < y and r is not None and 0.3 <= abs(r) <= 0.9:
+                par = (x, y); break
+        if par:
+            break
+    if par:
+        add(tipo="dispersion", titulo=f"{par[0]} vs {par[1]}", x=par[0], y=par[1],
+            serie=estados[0] if estados and card(estados[0]) <= 3 else None)
+    # 8. Distribución: mejor de algo que se promedia (calificación, tiempo de ciclo) que de un importe
+    h = promedios[0] if promedios else m1
+    if h:
+        add(tipo="histograma", titulo=f"Distribución de {h}", x=h, color=0)
     if lat and lon:
-        add(tipo="mapa", titulo="Mapa" + (f" de {m1}" if m1 and agg1 == "suma" else ""), lat=lat, lon=lon,
-            medida=m1 if agg1 == "suma" else None, agg="suma" if (m1 and agg1 == "suma") else "conteo",
-            serie=bajas[0] if bajas and card(bajas[0]) <= 6 else None, ancho=12)
-    add(tipo="tabla", titulo="Datos", columnas=[c["nombre"] for c in cols][:6], filas=8, ancho=12)
-    return {"v": 1, "grano": "auto", "filtros": [], "widgets": ws[:15]}
+        add(tipo="mapa", titulo="Mapa" + (f" de {m1}" if m1 and a1 == "suma" else ""), lat=lat, lon=lon,
+            medida=m1 if a1 == "suma" else None, agg="suma" if (m1 and a1 == "suma") else "conteo",
+            serie=(estados or [d for d in dims if card(d) <= 6] or [None])[0], ancho=12)
+    orden_tabla = fechas + [c["nombre"] for c in cols if c["rol"] == "identificador"] + dims + nums
+    add(tipo="tabla", titulo="Datos", columnas=list(dict.fromkeys(orden_tabla))[:8], filas=8, ancho=12,
+        orden=f0, dir="desc")
+    ws = _acomodar(ws[:16])
+    out = {"v": 1, "grano": "auto", "filtros": [], "widgets": ws}
+    if metricas:
+        out["metricas"] = metricas
+    return out

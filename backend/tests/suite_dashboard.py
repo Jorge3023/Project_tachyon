@@ -48,7 +48,9 @@ tipos = [w["tipo"] for w in r["config"]["widgets"]]
 check("sin vistas guardadas: se propone un dashboard", r["vista"]["guardada"] is False and len(tipos) >= 6, tipos)
 check("la propuesta trae indicadores, línea, circular, barras, dispersión, histograma y tabla",
       all(t in tipos for t in ("kpi", "linea", "dona", "barras", "dispersion", "histograma", "tabla")), tipos)
-check("la propuesta incluye Pareto (producto con 14 valores)", "pareto" in tipos, tipos)
+# Pareto solo cuando hay muchas categorías (más de 15); con 14 productos basta un ranking de barras
+check("la propuesta incluye un ranking por producto", any(w["tipo"] in ("barras", "pareto") and w.get("x") == "Producto"
+      for w in r["config"]["widgets"]), tipos)
 km = [w["medida"] for w in r["config"]["widgets"] if w["tipo"] == "kpi" and w.get("medida")]
 check("la métrica principal es el importe (no la cantidad ni el precio)", km == ["Monto", "Cantidad", "Precio"], km)
 res = c.post(f"/datasets/{aid}/dashboard/datos", headers=ana, json={"config": r["config"]}).json()

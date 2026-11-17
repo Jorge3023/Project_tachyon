@@ -33,12 +33,16 @@ def columnas_editor(a, esquema):
         res = {r["nombre"]: r for r in json.loads(a["resumen_json"] or "[]")}
     except ValueError:
         res = {}
+    fmts = dash.formatos(esquema)
     out = []
     for c in esquema:
         if c["rol"] == "ignorar":
             continue
         d = {"nombre": c["nombre"], "rol": c["rol"]}
-        if c["rol"] == "numero" and res.get(c["nombre"], {}).get("min") is not None:
-            d["min"], d["max"] = res[c["nombre"]]["min"], res[c["nombre"]]["max"]
+        if c["rol"] == "numero":
+            d["formato"] = fmts.get(c["nombre"])
+            d["agg"] = dash.agg_natural(c["nombre"], res.get(c["nombre"]), d["formato"])   # suma o promedio por defecto
+            if res.get(c["nombre"], {}).get("min") is not None:
+                d["min"], d["max"] = res[c["nombre"]]["min"], res[c["nombre"]]["max"]
         out.append(d)
     return out
