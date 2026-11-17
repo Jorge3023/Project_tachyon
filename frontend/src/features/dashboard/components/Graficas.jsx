@@ -4,7 +4,7 @@ import {
   Legend, PieChart, Pie, Cell, ScatterChart, Scatter, ZAxis,
 } from 'recharts'
 import {
-  TINTA, PALETA, colorSerie, colorRampa, tintaSobre, fmtNum, fmtCompacto, etiquetaPeriodo, etiquetaLarga,
+  TINTA, PALETA, colorSerie, colorRampa, tintaSobre, fmtNum, fmtValor, etiquetaPeriodo, etiquetaLarga,
 } from '@/features/dashboard/lib/dash'
 
 const ALTO = 240
@@ -44,21 +44,23 @@ function Leyenda({ items }) {
 export function Kpi({ widget, datos }) {
   const d = datos.delta
   const sube = d?.pct > 0, baja = d?.pct < 0
+  const grano = d?.grano || (widget.grano === 'auto' ? 'mes' : widget.grano)
   return (
     <div>
-      <p className="text-3xl font-semibold tracking-tight" style={{ color: TINTA.primaria }} title={datos.valor === null ? '' : String(datos.valor)}>
-        {datos.valor === null ? '—' : fmtCompacto(datos.valor)}
+      <p className="text-3xl font-semibold tracking-tight tabular-nums" style={{ color: TINTA.primaria }}
+        title={datos.valor === null ? '' : fmtValor(datos.valor, datos.formato)}>
+        {fmtValor(datos.valor, datos.formato, 'cifra')}
       </p>
       {d && d.pct !== null && (
-        <p className="text-xs mt-1 flex items-center gap-1" style={{ color: TINTA.secundaria }}>
+        <p className="text-xs mt-1 flex items-center gap-1 flex-wrap" style={{ color: TINTA.secundaria }}>
           <span aria-hidden="true">{sube ? '▲' : baja ? '▼' : '■'}</span>
           <span className="font-medium">{sube ? '+' : ''}{fmtNum(d.pct)} %</span>
-          <span>vs {etiquetaPeriodo(d.anterior, d.grano || (widget.grano === 'auto' ? 'mes' : widget.grano))}</span>
+          <span>{etiquetaPeriodo(d.actual, grano)} vs {etiquetaPeriodo(d.anterior, grano)}</span>
         </p>
       )}
       {d?.excluido && (
         <p className="text-xs mt-0.5" style={{ color: TINTA.suave || TINTA.secundaria }}>
-          Sin contar {etiquetaPeriodo(d.excluido, d.grano)} (periodo en curso)
+          Sin contar {etiquetaPeriodo(d.excluido, d.grano)}: está incompleto
         </p>
       )}
     </div>
@@ -66,10 +68,19 @@ export function Kpi({ widget, datos }) {
 }
 
 /* ── Líneas / área / barras ─────────────────────────────────────────────────── */
-function datosCategorias(datos) {
+// v{j}: el valor real (tooltip). s{j}: lo que se dibuja sólido. p{j}: el tramo hacia el último periodo, que está
+// incompleto (los datos no llegan a fin de mes) y se dibuja punteado para que no se lea como una caída.
+function datosCategorias(datos, partir = false) {
+  const n = datos.categorias.length
+  const parcial = partir && datos.parcial && n >= 2 && datos.categorias[n - 1] === datos.parcial
   return datos.categorias.map((c, i) => {
     const fila = { c, etiqueta: etiquetaPeriodo(c, datos.grano) }
-    datos.series.forEach((s, j) => { fila[`s${j}`] = s.valores[i] })
+    datos.series.forEach((s, j) => {
+      const v = s.valores[i]
+      fila[`v${j}`] = v
+      fila[`s${j}`] = parcial && i === n - 1 ? null : v
+      if (parcial) fila[`p${j}`] = i >= n - 2 ? v : null
+    })
     return fila
   })
 }
@@ -77,30 +88,39 @@ function datosCategorias(datos) {
 function TooltipSeries({ active, payload, datos }) {
   if (!active || !payload?.length) return null
   const fila = payload[0].payload
-  return <CajaTooltip titulo={etiquetaLarga(fila.c, datos.grano)}
-    filas={datos.series.map((s, j) => ({ nombre: s.nombre, valor: fmtNum(fila[`s${j}`]), color: colorSerie(j, s.nombre, datos.series.length === 1 ? datos._color : null) }))} />
+  const parcial = datos.parcial && fila.c === datos.parcial
+  return <CajaTooltip titulo={`${etiquetaLarga(fila.c, datos.grano)}${parcial ? ' (incompleto)' : ''}`}
+    filas={datos.series.map((s, j) => ({ nombre: s.nombre, valor: fmtValor(fila[`v${j}`], datos.formato), color: colorSerie(j, s.nombre, datos.series.length === 1 ? datos._color : null) }))} />
 }
 
 export function LineaArea({ widget, datos }) {
-  const data = datosCategorias(datos)
   const area = widget.tipo === 'area'
   const multi = datos.series.length > 1
+  const partir = !(area && multi)                     // con áreas apiladas el tramo punteado no se puede separar
+  const data = datosCategorias(datos, partir)
+  const conParcial = partir && data.some(f => f.p0 !== undefined)
   const Chart = area ? AreaChart : LineChart
+  const ejeY = v => fmtValor(v, datos.formato, 'compacto')
   return (
     <>
       <ResponsiveContainer width="100%" height={ALTO}>
         <Chart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
           <CartesianGrid vertical={false} stroke={TINTA.rejilla} />
           <XAxis dataKey="etiqueta" {...EJE} minTickGap={24} interval="preserveStartEnd" />
-          <YAxis {...EJE} width={48} tickFormatter={fmtCompacto} axisLine={false} />
+          <YAxis {...EJE} width={56} tickFormatter={ejeY} axisLine={false} />
           <Tooltip content={<TooltipSeries datos={{ ...datos, _color: widget.color ?? 0 }} />} cursor={{ stroke: TINTA.eje }} />
           {datos.series.map((s, j) => {
             const col = colorSerie(j, s.nombre, multi ? null : widget.color ?? 0)
+            const punto = { r: 4, stroke: TINTA.superficie, strokeWidth: 2 }
             return area
-              ? <Area key={j} type="monotone" dataKey={`s${j}`} stroke={col} strokeWidth={2} fill={col} fillOpacity={0.15}
-                  stackId={multi ? 'a' : undefined} dot={false} activeDot={{ r: 4, stroke: TINTA.superficie, strokeWidth: 2 }} isAnimationActive={false} />
-              : <Line key={j} type="monotone" dataKey={`s${j}`} stroke={col} strokeWidth={2} dot={false}
-                  activeDot={{ r: 4, stroke: TINTA.superficie, strokeWidth: 2 }} isAnimationActive={false} />
+              ? [<Area key={j} type="monotone" dataKey={`s${j}`} stroke={col} strokeWidth={2} fill={col} fillOpacity={0.15}
+                  stackId={multi ? 'a' : undefined} dot={false} activeDot={punto} isAnimationActive={false} />,
+                 conParcial && <Area key={`p${j}`} type="monotone" dataKey={`p${j}`} stroke={col} strokeWidth={2} strokeDasharray="4 4"
+                  fill={col} fillOpacity={0.06} dot={false} activeDot={false} isAnimationActive={false} legendType="none" />]
+              : [<Line key={j} type="monotone" dataKey={`s${j}`} stroke={col} strokeWidth={2} dot={false}
+                  activeDot={punto} isAnimationActive={false} />,
+                 conParcial && <Line key={`p${j}`} type="monotone" dataKey={`p${j}`} stroke={col} strokeWidth={2} strokeDasharray="4 4"
+                  dot={false} activeDot={false} isAnimationActive={false} legendType="none" />]
           })}
         </Chart>
       </ResponsiveContainer>
@@ -115,6 +135,8 @@ export function Barras({ widget, datos }) {
   const multi = datos.series.length > 1
   const apilado = multi && widget.apilado
   const largo = Math.max(...datos.categorias.map(c => String(c).length), 0)
+  const ejeV = v => fmtValor(v, datos.formato, 'compacto')
+  const ultimo = datos.parcial ? datos.categorias.length - 1 : -1      // barra del periodo incompleto: más tenue
   return (
     <>
       <ResponsiveContainer width="100%" height={horiz ? Math.max(ALTO, datos.categorias.length * 30 + 30) : ALTO}>
@@ -123,14 +145,14 @@ export function Barras({ widget, datos }) {
           <CartesianGrid horizontal={!horiz} vertical={horiz} stroke={TINTA.rejilla} />
           {horiz ? (
             <>
-              <XAxis type="number" {...EJE} tickFormatter={fmtCompacto} axisLine={false} />
+              <XAxis type="number" {...EJE} tickFormatter={ejeV} axisLine={false} />
               <YAxis type="category" dataKey="etiqueta" {...EJE} width={Math.min(130, 20 + largo * 6)} tickFormatter={v => corta(v, 20)} />
             </>
           ) : (
             <>
               <XAxis dataKey="etiqueta" {...EJE} interval={data.length <= 14 ? 0 : 'preserveStartEnd'} minTickGap={12}
                 tickFormatter={v => corta(v, data.length > 8 ? 8 : 14)} />
-              <YAxis {...EJE} width={48} tickFormatter={fmtCompacto} axisLine={false} />
+              <YAxis {...EJE} width={56} tickFormatter={ejeV} axisLine={false} />
             </>
           )}
           <Tooltip content={<TooltipSeries datos={{ ...datos, _color: widget.color ?? 0 }} />} cursor={{ fill: 'rgba(11,11,11,0.04)' }} />
@@ -138,7 +160,9 @@ export function Barras({ widget, datos }) {
             <Bar key={j} dataKey={`s${j}`} fill={colorSerie(j, s.nombre, multi ? null : widget.color ?? 0)} maxBarSize={24}
               stackId={apilado ? 'a' : undefined}
               stroke={apilado ? TINTA.superficie : 'none'} strokeWidth={apilado ? 2 : 0}
-              radius={apilado ? 0 : horiz ? [0, 4, 4, 0] : [4, 4, 0, 0]} isAnimationActive={false} />
+              radius={apilado ? 0 : horiz ? [0, 4, 4, 0] : [4, 4, 0, 0]} isAnimationActive={false}>
+              {ultimo >= 0 && data.map((_, i) => <Cell key={i} fillOpacity={i === ultimo ? 0.4 : 1} />)}
+            </Bar>
           ))}
         </BarChart>
       </ResponsiveContainer>
@@ -159,10 +183,10 @@ export function Dona({ widget, datos }) {
             {partes.map((p, i) => <Cell key={p.nombre} fill={colorSerie(i, p.nombre)} />)}
           </Pie>
           <Tooltip content={({ active, payload }) => active && payload?.length
-            ? <CajaTooltip titulo={payload[0].payload.nombre} filas={[{ nombre: 'Valor', valor: fmtNum(payload[0].payload.valor) }, { nombre: 'Participación', valor: `${fmtNum(payload[0].payload.pct)} %` }]} /> : null} />
+            ? <CajaTooltip titulo={payload[0].payload.nombre} filas={[{ nombre: 'Valor', valor: fmtValor(payload[0].payload.valor, datos.formato) }, { nombre: 'Participación', valor: `${fmtNum(payload[0].payload.pct)} %` }]} /> : null} />
         </PieChart>
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          <span className="text-lg font-semibold" style={{ color: TINTA.primaria }}>{fmtCompacto(datos.total)}</span>
+          <span className="text-lg font-semibold" style={{ color: TINTA.primaria }}>{fmtValor(datos.total, datos.formato, 'compacto')}</span>
           <span className="text-[11px]" style={{ color: TINTA.suave }}>total</span>
         </div>
       </div>
@@ -185,8 +209,8 @@ export function Pareto({ widget, datos }) {
   const col = PALETA[widget.color ?? 0]
   return (
     <div>
-      <div className="flex text-[11px] mb-1" style={{ color: TINTA.suave }}>
-        <span className="flex-1">Categoría</span><span className="w-24 text-right">Valor</span><span className="w-16 text-right">Acum.</span>
+      <div className="flex text-[11px] mb-1 gap-3" style={{ color: TINTA.suave }}>
+        <span className="flex-1">Categoría</span><span className="w-20 text-right">Valor</span><span className="w-16 text-right">Acumulado</span>
       </div>
       <ol className="space-y-1.5">
         {datos.categorias.map((c, i) => (
@@ -195,8 +219,8 @@ export function Pareto({ widget, datos }) {
             <span className="flex-1 h-4 rounded-r" style={{ background: '#f0efec' }}>
               <span className="block h-full" style={{ width: `${(datos.valores[i] / max) * 100}%`, background: col, borderRadius: '0 4px 4px 0', minWidth: 2 }} />
             </span>
-            <span className="w-16 text-right tabular-nums" style={{ color: TINTA.primaria }}>{fmtCompacto(datos.valores[i])}</span>
-            <span className="w-12 text-right tabular-nums" style={{ color: TINTA.secundaria }}>{fmtNum(datos.acumulado[i])} %</span>
+            <span className="w-20 text-right tabular-nums whitespace-nowrap" style={{ color: TINTA.primaria }}>{fmtValor(datos.valores[i], datos.formato, 'compacto')}</span>
+            <span className="w-16 text-right tabular-nums whitespace-nowrap" style={{ color: TINTA.secundaria }}>{fmtValor(datos.acumulado[i], 'porcentaje', 'compacto')}</span>
           </li>
         ))}
       </ol>
@@ -210,14 +234,16 @@ export function Dispersion({ widget, datos }) {
   const multi = series.length > 1
   return (
     <>
-      <ResponsiveContainer width="100%" height={ALTO}>
-        <ScatterChart margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
+      <ResponsiveContainer width="100%" height={ALTO + 16}>
+        <ScatterChart margin={{ top: 8, right: 12, bottom: 18, left: 8 }}>
           <CartesianGrid stroke={TINTA.rejilla} />
-          <XAxis type="number" dataKey="x" name={widget.x} {...EJE} tickFormatter={fmtCompacto} domain={['auto', 'auto']} />
-          <YAxis type="number" dataKey="y" name={widget.y} {...EJE} width={48} tickFormatter={fmtCompacto} axisLine={false} domain={['auto', 'auto']} />
+          <XAxis type="number" dataKey="x" name={widget.x} {...EJE} tickFormatter={v => fmtValor(v, datos.formato_x, 'compacto')} domain={['auto', 'auto']}
+            label={{ value: widget.x, position: 'insideBottom', offset: -12, fill: TINTA.secundaria, fontSize: 11 }} />
+          <YAxis type="number" dataKey="y" name={widget.y} {...EJE} width={60} tickFormatter={v => fmtValor(v, datos.formato_y, 'compacto')} axisLine={false} domain={['auto', 'auto']}
+            label={{ value: widget.y, angle: -90, position: 'insideLeft', offset: 0, fill: TINTA.secundaria, fontSize: 11, style: { textAnchor: 'middle' } }} />
           <ZAxis range={[48, 48]} />
           <Tooltip cursor={{ strokeDasharray: '3 3', stroke: TINTA.eje }} content={({ active, payload }) => active && payload?.length
-            ? <CajaTooltip titulo={multi ? payload[0].name : undefined} filas={[{ nombre: widget.x, valor: fmtNum(payload[0].payload.x) }, { nombre: widget.y, valor: fmtNum(payload[0].payload.y) }]} /> : null} />
+            ? <CajaTooltip titulo={multi ? payload[0].name : undefined} filas={[{ nombre: widget.x, valor: fmtValor(payload[0].payload.x, datos.formato_x) }, { nombre: widget.y, valor: fmtValor(payload[0].payload.y, datos.formato_y) }]} /> : null} />
           {series.map((s, i) => (
             <Scatter key={s.nombre} name={s.nombre} data={s.puntos} fill={colorSerie(i, s.nombre, multi ? null : widget.color ?? 0)}
               fillOpacity={0.75} stroke={TINTA.superficie} strokeWidth={1} isAnimationActive={false} />
@@ -231,7 +257,7 @@ export function Dispersion({ widget, datos }) {
 
 /* ── Histograma ─────────────────────────────────────────────────────────────── */
 export function Histograma({ widget, datos }) {
-  const data = datos.bins.map(b => ({ ...b, etiqueta: fmtCompacto(b.desde), rango: `${fmtNum(b.desde)} – ${fmtNum(b.hasta)}` }))
+  const data = datos.bins.map(b => ({ ...b, etiqueta: fmtValor(b.desde, datos.formato, 'compacto'), rango: `${fmtValor(b.desde, datos.formato)} – ${fmtValor(b.hasta, datos.formato)}` }))
   return (
     <ResponsiveContainer width="100%" height={ALTO}>
       <BarChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }} barCategoryGap={2} barGap={0}>
@@ -256,21 +282,36 @@ export function MapaCalor({ widget, datos }) {
       <div className="overflow-x-auto">
         <div className="grid gap-0.5 text-[11px]" style={{ gridTemplateColumns: `minmax(70px,auto) repeat(${columnas.length}, minmax(30px, 1fr))` }}>
           <span />
-          {columnas.map(c => <span key={c} className="text-center truncate px-0.5" style={{ color: TINTA.suave }} title={c}>{etiquetaPeriodo(c, datos.grano)}</span>)}
+          {columnas.map((c, i) => <EncabezadoPeriodo key={c} c={c} previo={columnas[i - 1]} grano={datos.grano} />)}
           {filas.map((f, j) => (
-            <Fila key={f} nombre={f} celdas={valores[j]} columnas={columnas} min={min} rango={rango} mostrar={mostrarValor} grano={datos.grano} />
+            <Fila key={f} nombre={f} celdas={valores[j]} columnas={columnas} min={min} rango={rango} mostrar={mostrarValor} grano={datos.grano} formato={datos.formato} />
           ))}
         </div>
       </div>
       <div className="flex items-center gap-2 mt-3 text-[11px]" style={{ color: TINTA.suave }}>
-        <span>{fmtCompacto(min)}</span>
+        <span>{fmtValor(min, datos.formato, 'compacto')}</span>
         <span className="h-2 flex-1 max-w-[140px] rounded" style={{ background: `linear-gradient(90deg, ${colorRampa(0)}, ${colorRampa(0.5)}, ${colorRampa(1)})` }} />
-        <span>{fmtCompacto(max)}</span>
+        <span>{fmtValor(max, datos.formato, 'compacto')}</span>
       </div>
     </div>
   )
 }
-function Fila({ nombre, celdas, columnas, min, rango, mostrar, grano }) {
+/** Encabezado de columna del mapa de calor: con meses, «ene» y el año solo cuando cambia (las columnas son angostas). */
+function EncabezadoPeriodo({ c, previo, grano }) {
+  const s = String(c)
+  if (grano === 'mes' && /^\d{4}-\d{2}$/.test(s)) {
+    const anio = s.slice(0, 4), nuevo = !previo || String(previo).slice(0, 4) !== anio
+    return (
+      <span className="text-center leading-tight px-0.5" style={{ color: TINTA.suave }} title={etiquetaLarga(s, grano)}>
+        {etiquetaPeriodo(s, grano).split(' ')[0]}
+        <span className="block text-[10px]" style={{ color: nuevo ? TINTA.secundaria : 'transparent' }}>{anio}</span>
+      </span>
+    )
+  }
+  return <span className="text-center truncate px-0.5" style={{ color: TINTA.suave }} title={s}>{etiquetaPeriodo(s, grano)}</span>
+}
+
+function Fila({ nombre, celdas, columnas, min, rango, mostrar, grano, formato }) {
   return (
     <>
       <span className="truncate pr-2 flex items-center" style={{ color: TINTA.secundaria }} title={nombre}>{nombre}</span>
@@ -279,8 +320,8 @@ function Fila({ nombre, celdas, columnas, min, rango, mostrar, grano }) {
         return (
           <span key={i} className="h-7 rounded-sm flex items-center justify-center tabular-nums"
             style={{ background: bg, color: v === null ? TINTA.suave : tintaSobre(bg) }}
-            title={`${nombre} · ${etiquetaLarga(columnas[i], grano)}: ${v === null ? 'sin datos' : fmtNum(v)}`}>
-            {mostrar && v !== null ? fmtCompacto(v) : ''}
+            title={`${nombre} · ${etiquetaLarga(columnas[i], grano)}: ${v === null ? 'sin datos' : fmtValor(v, formato)}`}>
+            {mostrar && v !== null ? fmtValor(v, formato, 'compacto') : ''}
           </span>
         )
       })}
@@ -305,7 +346,7 @@ export function Tabla({ datos }) {
             <tr key={r} className="border-b border-gray-50 last:border-0">
               {f.map((v, i) => (
                 <td key={i} className={`py-1.5 px-2 whitespace-nowrap ${datos.roles[i] === 'numero' ? 'text-right tabular-nums' : ''}`} style={{ color: TINTA.secundaria }}>
-                  {v === null ? '' : typeof v === 'number' ? fmtNum(v) : String(v)}
+                  {v === null ? '' : typeof v === 'number' ? fmtValor(v, datos.formatos?.[i]) : String(v)}
                 </td>
               ))}
             </tr>
@@ -319,18 +360,21 @@ export function Tabla({ datos }) {
 
 /* ── Vista alternativa en tabla (accesibilidad) ───────────────────────────────── */
 export function TablaAlternativa({ widget, datos }) {
-  let cols = [], filas = []
+  let cols = [], filas = [], formatos = []          // formato de cada columna (moneda, porcentaje o número)
+  const f = datos.formato
   if (['linea', 'area', 'barras'].includes(widget.tipo)) {
     cols = [widget.x, ...datos.series.map(s => s.nombre)]
     filas = datos.categorias.map((c, i) => [etiquetaLarga(c, datos.grano), ...datos.series.map(s => s.valores[i])])
+    formatos = cols.map((_, j) => (j ? f : null))
   } else if (widget.tipo === 'dona') {
-    cols = [widget.x, 'Valor', '%']; filas = datos.partes.map(p => [p.nombre, p.valor, p.pct])
+    cols = [widget.x, 'Valor', '%']; filas = datos.partes.map(p => [p.nombre, p.valor, p.pct]); formatos = [null, f, 'porcentaje']
   } else if (widget.tipo === 'pareto') {
-    cols = [widget.x, 'Valor', '% acumulado']; filas = datos.categorias.map((c, i) => [c, datos.valores[i], datos.acumulado[i]])
+    cols = [widget.x, 'Valor', '% acumulado']; filas = datos.categorias.map((c, i) => [c, datos.valores[i], datos.acumulado[i]]); formatos = [null, f, 'porcentaje']
   } else if (widget.tipo === 'histograma') {
-    cols = ['Desde', 'Hasta', 'Filas']; filas = datos.bins.map(b => [b.desde, b.hasta, b.n])
+    cols = ['Desde', 'Hasta', 'Filas']; filas = datos.bins.map(b => [b.desde, b.hasta, b.n]); formatos = [f, f, null]
   } else if (widget.tipo === 'calor') {
-    cols = [widget.y, ...datos.columnas]; filas = datos.filas.map((f, j) => [f, ...datos.valores[j]])
+    cols = [widget.y, ...datos.columnas]; filas = datos.filas.map((fl, j) => [fl, ...datos.valores[j]])
+    formatos = cols.map((_, j) => (j ? f : null))
   } else if (widget.tipo === 'mapa') {
     const conCat = datos.series?.length > 0
     cols = ['Latitud', 'Longitud', datos.medida ? `${datos.agg} de ${datos.medida}` : 'Filas', ...(datos.medida ? ['Filas'] : []), ...(conCat ? ['Categoría'] : [])]
@@ -342,7 +386,7 @@ export function TablaAlternativa({ widget, datos }) {
         <thead><tr>{cols.map(c => <th key={c} className="sticky top-0 bg-white text-left font-medium py-1 px-2 border-b border-gray-100" style={{ color: TINTA.suave }}>{etiquetaPeriodo(c, datos.grano)}</th>)}</tr></thead>
         <tbody>{filas.map((f, i) => (
           <tr key={i} className="border-b border-gray-50 last:border-0">
-            {f.map((v, j) => <td key={j} className={`py-1 px-2 ${typeof v === 'number' ? 'tabular-nums' : ''}`} style={{ color: TINTA.secundaria }}>{v === null ? '' : typeof v === 'number' ? fmtNum(v) : String(v)}</td>)}
+            {f.map((v, j) => <td key={j} className={`py-1 px-2 ${typeof v === 'number' ? 'tabular-nums' : ''}`} style={{ color: TINTA.secundaria }}>{v === null ? '' : typeof v === 'number' ? fmtValor(v, formatos[j]) : String(v)}</td>)}
           </tr>))}
         </tbody>
       </table>

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import api from '@/shared/api'
+import api, { ESPERA_ARCHIVOS } from '@/shared/api'
 
 const ETIQUETA_ROL = {
   fecha: 'Fecha',
@@ -11,12 +11,31 @@ const ETIQUETA_ROL = {
   ignorar: 'Ignorar columna',
 }
 
+const ETIQUETA_FORMATO = { numero: 'Número', moneda: 'Moneda ($)', porcentaje: 'Porcentaje (%)' }
+const lista = (xs) => xs.map(x => `«${x}»`).join(', ')
+
+/** Lo que pasará con los valores de la columna con el tipo elegido (se avisa antes de guardar). */
+function avisosColumna(c) {
+  const out = []
+  const l = c.lectura?.[c.rol]
+  if (l?.n > 0) {
+    out.push(`${l.n.toLocaleString('es-MX')} ${l.n === 1 ? 'valor no se puede' : 'valores no se pueden'} leer como ${c.rol === 'numero' ? 'número' : 'fecha'}` +
+      `${l.ejemplos?.length ? ` (${lista(l.ejemplos)})` : ''}: ${l.n === 1 ? 'quedará vacío' : 'quedarán vacíos'}.`)
+  }
+  if ((c.rol === 'categoria' || c.rol === 'estado') && c.variantes?.length) {
+    out.push(`Se unificará la escritura: ${c.variantes.map(([a, b]) => `«${a}» → «${b}»`).join(', ')}.`)
+  }
+  return out
+}
+
 // Pantalla de revisión: el sistema propone el tipo de cada columna y la persona lo corrige antes de guardar.
+// modo «edicion»: la misma pantalla para corregir las columnas de un archivo que ya se guardó.
 export default function ModalRevisarColumnas({ analisis: inicial, proyectoId = null, onCancelar, onGuardado }) {
+  const edicion = inicial.modo === 'edicion'
   const [analisis, setAnalisis] = useState(inicial)
   const [cols, setCols] = useState(inicial.columnas)
   const [filaEnc, setFilaEnc] = useState(inicial.fila_encabezado + 1)   // se muestra desde 1
-  const [guardarPlantilla, setGuardarPlantilla] = useState(!inicial.plantilla)
+  const [guardarPlantilla, setGuardarPlantilla] = useState(!inicial.plantilla && !edicion)
   const [nombrePlantilla, setNombrePlantilla] = useState(inicial.nombre.replace(/\.[^.]+$/, ''))
   const [trabajando, setTrabajando] = useState(false)
   const [recargando, setRecargando] = useState(false)
@@ -28,7 +47,7 @@ export default function ModalRevisarColumnas({ analisis: inicial, proyectoId = n
       const params = new URLSearchParams()
       if (hoja) params.set('hoja', hoja)
       if (fila1 !== null) params.set('fila_encabezado', String(Math.max(0, fila1 - 1)))
-      const r = await api.get(`/datasets/${analisis.archivo_id}/analisis?${params}`)
+      const r = await api.get(`/datasets/${analisis.archivo_id}/${edicion ? 'columnas' : 'analisis'}?${params}`, { timeout: ESPERA_ARCHIVOS })
       setAnalisis(r.data); setCols(r.data.columnas); setFilaEnc(r.data.fila_encabezado + 1)
     } catch (e) {
       setError(e.response?.data?.detail || 'No se pudo volver a leer el archivo')
@@ -40,15 +59,17 @@ export default function ModalRevisarColumnas({ analisis: inicial, proyectoId = n
 
   const activas = cols.filter(c => c.rol !== 'ignorar').length
   const dudosas = cols.filter(c => c.revisar && c.rol !== 'ignorar').length
+  const conAvisos = cols.filter(c => c.rol !== 'ignorar' && avisosColumna(c).length).length
 
   const guardar = async () => {
     setTrabajando(true); setError('')
     try {
-      const r = await api.post(`/datasets/${analisis.archivo_id}/confirmar`, {
+      const r = await api.post(`/datasets/${analisis.archivo_id}/${edicion ? 'columnas' : 'confirmar'}`, {
         hoja: analisis.hoja, fila_encabezado: analisis.fila_encabezado,
-        columnas: cols.map(c => ({ nombre: c.nombre, rol: c.rol, nombre_mostrar: c.nombre_mostrar })),
+        columnas: cols.map(c => ({ nombre: c.nombre, rol: c.rol, nombre_mostrar: c.nombre_mostrar,
+          formato: c.rol === 'numero' ? (c.formato || 'numero') : null })),
         guardar_plantilla: guardarPlantilla, nombre_plantilla: nombrePlantilla, proyecto_id: proyectoId,
-      })
+      }, { timeout: ESPERA_ARCHIVOS })
       onGuardado(r.data)
     } catch (e) {
       setError(e.response?.data?.detail || 'No se pudo guardar')
@@ -57,7 +78,7 @@ export default function ModalRevisarColumnas({ analisis: inicial, proyectoId = n
   }
 
   const cancelar = async () => {
-    try { await api.delete(`/datasets/${analisis.archivo_id}/borrador`) } catch { /* ya no existe */ }
+    if (!edicion) { try { await api.delete(`/datasets/${analisis.archivo_id}/borrador`) } catch { /* ya no existe */ } }
     onCancelar()
   }
 
@@ -65,11 +86,16 @@ export default function ModalRevisarColumnas({ analisis: inicial, proyectoId = n
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" role="dialog" aria-modal="true">
       <div className="bg-white rounded-2xl w-full max-w-5xl max-h-[92vh] flex flex-col shadow-xl">
         <div className="px-6 py-4 border-b border-gray-100">
-          <h3 className="text-sm font-semibold text-gray-900">Revisar columnas — {analisis.nombre}</h3>
+          <h3 className="text-sm font-semibold text-gray-900">{edicion ? 'Corregir columnas' : 'Revisar columnas'} — {analisis.nombre}</h3>
           <p className="text-xs text-gray-400 mt-0.5">
-            {analisis.filas.toLocaleString()} filas · {analisis.columnas.length} columnas detectadas.
-            Corrige lo que no esté bien; así sabremos cómo interpretar tus datos.
+            {analisis.filas.toLocaleString('es-MX')} filas · {analisis.columnas.length} columnas.{' '}
+            {edicion
+              ? 'Cambia el tipo, el nombre o el formato. Tus vistas se conservan: los nombres nuevos se actualizan y, si una gráfica ya no encaja, se quita al abrirla (con aviso).'
+              : 'Corrige lo que no esté bien; así sabremos cómo interpretar tus datos.'}
           </p>
+          {edicion && !analisis.origen_disponible && (
+            <p className="text-xs text-amber-700 mt-1.5">Este archivo se guardó antes de conservar el original: las columnas que ignoraste ya no se pueden recuperar.</p>
+          )}
         </div>
 
         <div className="px-6 py-4 overflow-y-auto space-y-4">
@@ -80,7 +106,7 @@ export default function ModalRevisarColumnas({ analisis: inicial, proyectoId = n
             </div>
           )}
 
-          <div className="flex flex-wrap items-end gap-4">
+          <div className={`flex flex-wrap items-end gap-4 ${edicion && !analisis.origen_disponible ? 'hidden' : ''}`}>
             {analisis.hojas.length > 1 && (
               <label className="text-xs text-gray-500">
                 Hoja
@@ -120,22 +146,33 @@ export default function ModalRevisarColumnas({ analisis: inicial, proyectoId = n
                       <p className="font-medium text-gray-800">{c.nombre}</p>
                       {c.revisar && c.rol !== 'ignorar'
                         ? <span className="badge-warn mt-1 inline-block" title={c.razon}>Revisar</span>
-                        : <p className="text-[11px] text-gray-400 mt-0.5">{Math.round(c.confianza * 100)}% seguro</p>}
+                        : !edicion && <p className="text-[11px] text-gray-400 mt-0.5">{Math.round(c.confianza * 100)} % seguro</p>}
                     </td>
                     <td className="px-3 py-2 align-top">
                       <input className="input" aria-label={`Nombre de ${c.nombre}`} value={c.nombre_mostrar}
                         onChange={e => cambiar(i, 'nombre_mostrar', e.target.value)} />
                     </td>
                     <td className="px-3 py-2 align-top">
-                      <select className="input" aria-label={`Tipo de ${c.nombre}`} value={c.rol}
-                        onChange={e => cambiar(i, 'rol', e.target.value)}>
-                        {analisis.roles.map(r => <option key={r} value={r}>{ETIQUETA_ROL[r] || r}</option>)}
-                      </select>
-                      <p className="text-[11px] text-gray-400 mt-1 max-w-[16rem]">{c.razon}</p>
+                      <div className="flex flex-col gap-1.5">
+                        <select className="input" aria-label={`Tipo de ${c.nombre}`} value={c.rol}
+                          onChange={e => cambiar(i, 'rol', e.target.value)}>
+                          {analisis.roles.map(r => <option key={r} value={r}>{ETIQUETA_ROL[r] || r}</option>)}
+                        </select>
+                        {c.rol === 'numero' && (
+                          <select className="input py-1.5 text-xs" aria-label={`Formato de ${c.nombre}`} value={c.formato || 'numero'}
+                            onChange={e => cambiar(i, 'formato', e.target.value)} title="Cómo se muestran los valores">
+                            {Object.entries(ETIQUETA_FORMATO).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                          </select>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-gray-400 mt-1 max-w-[18rem]">{c.razon}</p>
+                      {c.rol !== 'ignorar' && avisosColumna(c).map((a, k) => (
+                        <p key={k} className="text-[11px] text-amber-700 mt-1 max-w-[18rem]">{a}</p>
+                      ))}
                     </td>
                     <td className="px-3 py-2 align-top text-gray-500 max-w-[16rem]">
                       <p className="truncate">{(c.ejemplos || []).join(' · ')}</p>
-                      <p className="text-[11px] text-gray-400 mt-0.5">{c.unicos} distintos · {Math.round(c.nulos_pct * 100)}% vacíos</p>
+                      <p className="text-[11px] text-gray-400 mt-0.5">{c.unicos} distintos · {Math.round(c.nulos_pct)} % vacíos</p>
                     </td>
                   </tr>
                 ))}
@@ -166,7 +203,7 @@ export default function ModalRevisarColumnas({ analisis: inicial, proyectoId = n
             <div className="flex flex-wrap items-center gap-3 text-xs text-gray-600">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={guardarPlantilla} onChange={e => setGuardarPlantilla(e.target.checked)} />
-                Guardar como plantilla para archivos con estas columnas
+                {edicion ? 'Actualizar la plantilla para archivos con estas columnas' : 'Guardar como plantilla para archivos con estas columnas'}
               </label>
               {guardarPlantilla && (
                 <input className="input w-52" aria-label="Nombre de la plantilla" value={nombrePlantilla}
@@ -175,12 +212,13 @@ export default function ModalRevisarColumnas({ analisis: inicial, proyectoId = n
             </div>
             <div className="flex items-center gap-2">
               {dudosas > 0 && <span className="text-xs text-amber-600">{dudosas} por revisar</span>}
+              {conAvisos > 0 && <span className="text-xs text-amber-600">{conAvisos} con avisos</span>}
               <button type="button" onClick={cancelar} className="px-4 py-2 rounded-lg border border-gray-200 text-sm text-gray-500 hover:bg-gray-50">
                 Cancelar
               </button>
               <button type="button" onClick={guardar} disabled={trabajando || recargando || activas === 0}
                 className="btn-primary disabled:opacity-50">
-                {trabajando ? 'Guardando…' : `Guardar ${activas} ${activas === 1 ? 'columna' : 'columnas'}`}
+                {trabajando ? 'Guardando…' : edicion ? 'Guardar cambios' : `Guardar ${activas} ${activas === 1 ? 'columna' : 'columnas'}`}
               </button>
             </div>
           </div>

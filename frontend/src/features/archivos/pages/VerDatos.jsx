@@ -1,25 +1,27 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import api from '@/shared/api'
+import api, { ESPERA_ARCHIVOS } from '@/shared/api'
 import PageHeader from '@/shared/components/PageHeader'
 import Cargando from '@/shared/components/Cargando'
+import ModalRevisarColumnas from '@/features/archivos/components/ModalRevisarColumnas'
+import { fmtValor } from '@/features/dashboard/lib/dash'
 
 const ETIQUETA_ROL = { fecha: 'Fecha', numero: 'Número', categoria: 'Categoría', identificador: 'Identificador', estado: 'Estado', texto: 'Texto' }
-const fmt = (n) => (n === undefined || n === null) ? '' : Number(n).toLocaleString('es-MX', { maximumFractionDigits: 2 })
+const fmt = (n, formato) => (n === undefined || n === null) ? '' : fmtValor(Number(n), formato)
 
-function ResumenColumna({ r }) {
+function ResumenColumna({ r, formato }) {
   return (
     <div className="card p-4">
       <div className="flex items-center justify-between gap-2">
         <p className="text-sm font-medium text-gray-900 truncate">{r.nombre}</p>
-        <span className="text-[11px] text-gray-400 flex-shrink-0">{ETIQUETA_ROL[r.rol] || r.rol}</span>
+        <span className="text-[11px] text-gray-400 flex-shrink-0">{ETIQUETA_ROL[r.rol] || r.rol}{formato === 'moneda' ? ' · $' : formato === 'porcentaje' ? ' · %' : ''}</span>
       </div>
       {r.rol === 'numero' && r.min !== undefined && (
         <dl className="grid grid-cols-2 gap-x-3 gap-y-1 mt-2 text-xs">
-          <dt className="text-gray-400">Suma</dt><dd className="text-right text-gray-700">{fmt(r.suma)}</dd>
-          <dt className="text-gray-400">Promedio</dt><dd className="text-right text-gray-700">{fmt(r.media)}</dd>
-          <dt className="text-gray-400">Mínimo</dt><dd className="text-right text-gray-700">{fmt(r.min)}</dd>
-          <dt className="text-gray-400">Máximo</dt><dd className="text-right text-gray-700">{fmt(r.max)}</dd>
+          <dt className="text-gray-400">Suma</dt><dd className="text-right text-gray-700">{formato === 'porcentaje' ? '—' : fmt(r.suma, formato)}</dd>
+          <dt className="text-gray-400">Promedio</dt><dd className="text-right text-gray-700">{fmt(r.media, formato)}</dd>
+          <dt className="text-gray-400">Mínimo</dt><dd className="text-right text-gray-700">{fmt(r.min, formato)}</dd>
+          <dt className="text-gray-400">Máximo</dt><dd className="text-right text-gray-700">{fmt(r.max, formato)}</dd>
         </dl>
       )}
       {r.rol === 'fecha' && r.desde && (
@@ -35,7 +37,13 @@ function ResumenColumna({ r }) {
           ))}
         </div>
       )}
-      {r.nulos > 0 && <p className="text-[11px] text-amber-600 mt-2">{r.nulos} vacíos</p>}
+      {r.nulos > 0 && <p className="text-[11px] text-amber-600 mt-2">{r.nulos.toLocaleString('es-MX')} vacíos</p>}
+      {r.no_leidos > 0 && (
+        <p className="text-[11px] text-amber-700 mt-1">
+          {r.no_leidos.toLocaleString('es-MX')} no se pudieron leer{r.ejemplos_no_leidos?.length ? ` (${r.ejemplos_no_leidos.map(e => `«${e}»`).join(', ')})` : ''}
+        </p>
+      )}
+      {r.unificados > 0 && <p className="text-[11px] text-gray-400 mt-1">{r.unificados} {r.unificados === 1 ? 'variante unificada' : 'variantes unificadas'} (mayúsculas, acentos)</p>}
     </div>
   )
 }
@@ -45,14 +53,26 @@ export default function VerDatos() {
   const [datos, setDatos] = useState(null)
   const [pagina, setPagina] = useState(1)
   const [error, setError] = useState('')
+  const [editando, setEditando] = useState(null)       // análisis de columnas para corregirlas
+  const [abriendo, setAbriendo] = useState(false)
+  const [aviso, setAviso] = useState('')
   const POR_PAGINA = 25
 
-  useEffect(() => {
+  const cargar = useCallback(() => {
     setError('')
     api.get(`/datasets/${id}/datos?pagina=${pagina}&por_pagina=${POR_PAGINA}`)
       .then(r => setDatos(r.data))
       .catch(e => setError(e.response?.status === 404 ? 'No encontramos estos datos (o no tienes acceso).' : 'No se pudieron cargar los datos'))
   }, [id, pagina])
+  useEffect(() => { cargar() }, [cargar])
+
+  const corregir = async () => {
+    setAbriendo(true); setAviso('')
+    try { setEditando((await api.get(`/datasets/${id}/columnas`, { timeout: ESPERA_ARCHIVOS })).data) }
+    catch (e) { setAviso(e.response?.data?.detail || 'No se pudieron abrir las columnas') }
+    finally { setAbriendo(false) }
+  }
+  const formatoDe = (nombre) => datos?.columnas.find(c => c.nombre === nombre)?.formato
 
   const paginas = datos ? Math.max(1, Math.ceil(datos.total / POR_PAGINA)) : 1
 
@@ -62,15 +82,26 @@ export default function VerDatos() {
         migas={[{ texto: 'Archivos', to: '/archivos' }, { texto: datos?.archivo.nombre || 'Datos' }]}
         titulo="Datos"
         subtitulo={datos && `${datos.total.toLocaleString('es-MX')} filas · ${datos.columnas.length} columnas${!datos.archivo.es_mio ? ' · compartido contigo (solo lectura)' : ''}`}
-        acciones={<Link to={`/datos/${id}/dashboard`} className="btn-secondary text-xs">Ver dashboard</Link>} />
+        acciones={<>
+          {datos?.archivo.es_mio && (
+            <button type="button" className="btn-ghost text-xs" onClick={corregir} disabled={abriendo}
+              title="Cambiar el tipo, el nombre o el formato de las columnas">{abriendo ? 'Abriendo…' : 'Corregir columnas'}</button>
+          )}
+          <Link to={`/datos/${id}/dashboard`} className="btn-secondary text-xs">Ver dashboard</Link>
+        </>} />
+      {editando && (
+        <ModalRevisarColumnas analisis={editando} onCancelar={() => setEditando(null)}
+          onGuardado={r => { setEditando(null); setAviso(r.mensaje); cargar() }} />
+      )}
 
       <main className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5">
         {error && <div className="px-4 py-3 rounded-lg text-sm bg-red-50 text-red-700">{error}</div>}
+        {aviso && <div role="status" className="px-4 py-3 rounded-lg text-sm bg-green-50 text-green-800">{aviso}</div>}
         {!datos && !error && <Cargando />}
         {datos && (
           <>
             <section aria-label="Resumen por columna" className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
-              {datos.resumen.map(r => <ResumenColumna key={r.nombre} r={r} />)}
+              {datos.resumen.map(r => <ResumenColumna key={r.nombre} r={r} formato={formatoDe(r.nombre)} />)}
             </section>
 
             <section className="card p-0 overflow-hidden">
@@ -84,7 +115,7 @@ export default function VerDatos() {
                       <tr key={i} className="hover:bg-gray-50/60">
                         {f.map((v, j) => (
                           <td key={j} className={'px-3 py-1.5 whitespace-nowrap text-gray-700 ' + (datos.columnas[j].rol === 'numero' ? 'text-right tabular-nums' : '')}>
-                            {datos.columnas[j].rol === 'numero' ? fmt(v) : (v ?? '')}
+                            {datos.columnas[j].rol === 'numero' ? fmt(v, datos.columnas[j].formato) : (v ?? '')}
                           </td>
                         ))}
                       </tr>

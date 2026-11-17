@@ -28,6 +28,12 @@ def init_db():
     # Foto de perfil: 0 = sin foto; si no, versión (marca de tiempo) para que el navegador no use una copia vieja
     if "avatar_v" not in db.columnas(conn, "usuarios"):
         cur.execute("ALTER TABLE usuarios ADD COLUMN avatar_v INTEGER DEFAULT 0")
+    # Contraseñas: quien recibe una temporal del administrador debe cambiarla al entrar; password_v sube en cada
+    # cambio y va dentro del token, así las sesiones abiertas con la contraseña anterior se cierran solas.
+    cols_u = db.columnas(conn, "usuarios")
+    for nueva in ("debe_cambiar_password", "password_v"):
+        if nueva not in cols_u:
+            cur.execute(f"ALTER TABLE usuarios ADD COLUMN {nueva} INTEGER DEFAULT 0")
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_username "
                 "ON usuarios(lower(username)) WHERE username IS NOT NULL")
     # Archivos genéricos (cualquier Excel/CSV): tipo, esquema de columnas confirmado y huella de columnas

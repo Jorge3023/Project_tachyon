@@ -20,7 +20,8 @@ PG_ADMIN = os.getenv("TEST_PG_ADMIN_URL")
 
 
 def _correr(suite, env_extra=None):
-    env = {**os.environ, "PYTHONHASHSEED": "0", **(env_extra or {})}
+    # Con DATABASE_URL o SUPABASE_URL el servidor exige una SECRET_KEY propia (ver core/config.py)
+    env = {"SECRET_KEY": "clave-de-pruebas-0123456789-abcdefghijklmnop", **os.environ, "PYTHONHASHSEED": "0", **(env_extra or {})}
     for k in ("DATABASE_URL", "SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_KEY"):
         if k not in (env_extra or {}):
             env.pop(k, None)
@@ -35,7 +36,7 @@ def test_sqlite(suite):
 
 
 @pytest.mark.skipif(not PG_ADMIN, reason="define TEST_PG_ADMIN_URL para probar contra PostgreSQL")
-@pytest.mark.parametrize("suite", [s for s in SUITES if s.stem not in ("suite_detector", "suite_seed", "suite_storage_mock")],
+@pytest.mark.parametrize("suite", [s for s in SUITES if s.stem not in ("suite_detector", "suite_seed", "suite_storage_mock", "suite_archivos_grandes")],
                          ids=lambda p: p.stem.removeprefix("suite_"))
 def test_postgres(suite):
     import psycopg

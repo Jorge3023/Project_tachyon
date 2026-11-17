@@ -4,6 +4,7 @@ import api from '@/shared/api'
 import { useAuth } from '@/features/auth/AuthContext'
 import Avatar from '@/shared/components/Avatar'
 import { etiquetaRol } from '@/shared/roles'
+import FormPassword from './FormPassword'
 
 const LADO = 256   // la foto se recorta cuadrada y se reduce a 256 px: pesa unos 20-40 KB
 
@@ -25,6 +26,7 @@ export default function ModalPerfil({ onCerrar }) {
   const entrada = useRef(null)
   const [trabajando, setTrabajando] = useState(false)
   const [error, setError] = useState('')
+  const [password, setPassword] = useState('cerrado')   // 'cerrado' | 'abierto' | 'listo'
 
   useEffect(() => {
     const tecla = e => { if (e.key === 'Escape') onCerrar() }
@@ -56,7 +58,7 @@ export default function ModalPerfil({ onCerrar }) {
   return createPortal(
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onCerrar}>
       <div role="dialog" aria-modal="true" aria-label="Tu perfil" onClick={e => e.stopPropagation()}
-        className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6">
+        className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 max-h-[90vh] overflow-y-auto">
         <div className="flex items-start justify-between">
           <h2 className="text-base font-semibold text-gray-900">Tu perfil</h2>
           <button onClick={onCerrar} aria-label="Cerrar" className="text-gray-400 hover:text-gray-700 -mt-1 -mr-1 w-8 h-8 rounded-lg hover:bg-gray-100">✕</button>
@@ -77,6 +79,15 @@ export default function ModalPerfil({ onCerrar }) {
         </div>
         <p className="text-[11px] text-gray-400 text-center mt-3">Se recorta en cuadrado y se reduce automáticamente. La ven tú y los administradores.</p>
         {error && <p role="alert" className="mt-3 text-xs text-red-700 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
+
+        <div className="mt-5 pt-4 border-t border-gray-100">
+          {password === 'abierto'
+            ? <FormPassword onListo={() => setPassword('listo')} />
+            : <div className="text-center">
+                {password === 'listo' && <p role="status" className="text-xs text-green-700 bg-green-50 rounded-lg px-3 py-2 mb-3">Contraseña cambiada.</p>}
+                <button className="btn-secondary text-xs" onClick={() => setPassword('abierto')}>Cambiar contraseña</button>
+              </div>}
+        </div>
       </div>
     </div>,
     document.body

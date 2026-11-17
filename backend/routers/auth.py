@@ -7,7 +7,7 @@ import re
 import time
 from core import storage
 from core.db import get_db
-from core.seguridad import crear_token, get_usuario_actual, usuario_publico
+from core.seguridad import token_de, get_usuario_actual, usuario_publico
 from servicios.cuentas import ruta_avatar
 
 router = APIRouter(tags=["Sesión"])
@@ -20,12 +20,47 @@ def login(form: OAuth2PasswordRequestForm = Depends()):
     conn.close()
     if not u or not bcrypt.checkpw(form.password.encode(), u["password_hash"].encode()):
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
-    token = crear_token({"sub": u["correo"], "rol": u["rol"]})
-    return {"access_token": token, "token_type": "bearer", "usuario": usuario_publico(u)}
+    return {"access_token": token_de(u), "token_type": "bearer", "usuario": usuario_publico(u)}
 
 @router.get("/auth/me")
 def me(u=Depends(get_usuario_actual)):
     return usuario_publico(u)
+
+# ── Contraseña ──────────────────────────────────────────────────────────────────
+MIN_PASSWORD = 8
+MAX_PASSWORD_BYTES = 72        # bcrypt ignora lo que pase de 72 bytes: se rechaza en vez de recortar en silencio
+
+def validar_password(pw: str):
+    """Reglas comunes para cualquier contraseña nueva (la elija el usuario o la ponga el administrador)."""
+    if len(pw) < MIN_PASSWORD:
+        raise HTTPException(status_code=422, detail=f"La contraseña debe tener al menos {MIN_PASSWORD} caracteres")
+    if len(pw.encode()) > MAX_PASSWORD_BYTES:
+        raise HTTPException(status_code=422, detail="La contraseña es demasiado larga (máximo 72 caracteres)")
+
+class PasswordIn(BaseModel):
+    actual: str
+    nueva: str
+
+@router.post("/auth/password")
+def cambiar_password(datos: PasswordIn, u=Depends(get_usuario_actual)):
+    """El usuario cambia su propia contraseña. Devuelve un token nuevo: los anteriores dejan de valer."""
+    # 400 y no 401: el frontend interpreta 401 como «sesión vencida» y cerraría la sesión
+    if not bcrypt.checkpw(datos.actual.encode(), u["password_hash"].encode()):
+        raise HTTPException(status_code=400, detail="La contraseña actual no es correcta")
+    validar_password(datos.nueva)
+    if datos.nueva == datos.actual:
+        raise HTTPException(status_code=422, detail="La contraseña nueva debe ser distinta de la actual")
+    ph = bcrypt.hashpw(datos.nueva.encode(), bcrypt.gensalt()).decode()
+    conn = get_db()
+    try:
+        conn.execute("UPDATE usuarios SET password_hash=?, debe_cambiar_password=0, password_v=COALESCE(password_v,0)+1 "
+                     "WHERE id=?", (ph, u["id"]))
+        conn.commit()
+        nuevo = conn.execute("SELECT * FROM usuarios WHERE id=?", (u["id"],)).fetchone()
+    finally:
+        conn.close()
+    return {"access_token": token_de(nuevo), "token_type": "bearer", "usuario": usuario_publico(nuevo)}
+
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.]{3,20}$")
 

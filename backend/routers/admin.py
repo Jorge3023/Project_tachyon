@@ -8,6 +8,7 @@ from core.validacion import EMAIL_RE
 from core.db import get_db
 from core.seguridad import require_admin
 from servicios.cuentas import borrar_usuario
+from routers.auth import validar_password
 
 router = APIRouter(tags=["Administración"])
 
@@ -45,9 +46,14 @@ def diagnostico(u=Depends(require_admin)):
 @router.get("/usuarios")
 def listar_usuarios(u=Depends(require_admin)):
     conn = get_db()
-    rows = conn.execute("SELECT id,nombre,username,correo,rol,activo,creado_en,avatar_v FROM usuarios ORDER BY id").fetchall()
+    rows = conn.execute("SELECT id,nombre,username,correo,rol,activo,creado_en,avatar_v,debe_cambiar_password FROM usuarios ORDER BY id").fetchall()
     conn.close()
-    return [{**dict(r), "pendiente_username": not r["username"]} for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["pendiente_password"] = bool(d.pop("debe_cambiar_password"))
+        out.append({**d, "pendiente_username": not r["username"]})
+    return out
 
 class UsuarioNuevo(BaseModel):
     correo: str
@@ -60,8 +66,7 @@ def crear_usuario(datos: UsuarioNuevo, u=Depends(require_admin)):
     correo = datos.correo.strip().lower()
     if not EMAIL_RE.match(correo):
         raise HTTPException(status_code=422, detail="Correo electrónico no válido")
-    if len(datos.password) < 8:
-        raise HTTPException(status_code=422, detail="La contraseña debe tener al menos 8 caracteres")
+    validar_password(datos.password)
     if datos.rol not in ("admin", "operador"):
         raise HTTPException(status_code=422, detail="Rol no válido")
     ph = bcrypt.hashpw(datos.password.encode(), bcrypt.gensalt()).decode()
@@ -69,7 +74,8 @@ def crear_usuario(datos: UsuarioNuevo, u=Depends(require_admin)):
     try:
         if conn.execute("SELECT 1 FROM usuarios WHERE lower(correo)=?", (correo,)).fetchone():
             raise HTTPException(status_code=409, detail="Ya existe un usuario con ese correo")
-        cur = conn.execute("INSERT INTO usuarios (nombre,correo,password_hash,rol) VALUES (?,?,?,?)",
+        # La contraseña la conoce el administrador: es temporal y el usuario la cambia en su primer ingreso
+        cur = conn.execute("INSERT INTO usuarios (nombre,correo,password_hash,rol,debe_cambiar_password) VALUES (?,?,?,?,1)",
                            (correo.split("@")[0], correo, ph, datos.rol))
         conn.commit()
         nuevo_id = cur.lastrowid
@@ -93,6 +99,28 @@ def activar_usuario(usuario_id: int, datos: ActivoIn, u=Depends(require_admin)):
     finally:
         conn.close()
     return {"id": usuario_id, "activo": datos.activo}
+
+class PasswordTemporalIn(BaseModel):
+    password: str
+
+@router.post("/usuarios/{usuario_id}/password")
+def restablecer_password(usuario_id: int, datos: PasswordTemporalIn, u=Depends(require_admin)):
+    """Para quien olvidó su contraseña: el admin pone una temporal, se cierran las sesiones de esa cuenta
+    y el usuario debe elegir una nueva al entrar."""
+    if usuario_id == u["id"]:
+        raise HTTPException(status_code=422, detail="Tu propia contraseña se cambia desde tu perfil")
+    validar_password(datos.password)
+    ph = bcrypt.hashpw(datos.password.encode(), bcrypt.gensalt()).decode()
+    conn = get_db()
+    try:
+        if not conn.execute("SELECT 1 FROM usuarios WHERE id=?", (usuario_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        conn.execute("UPDATE usuarios SET password_hash=?, debe_cambiar_password=1, password_v=COALESCE(password_v,0)+1 "
+                     "WHERE id=?", (ph, usuario_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": usuario_id, "mensaje": "Contraseña temporal guardada"}
 
 @router.delete("/usuarios/{usuario_id}")
 def eliminar_usuario(usuario_id: int, u=Depends(require_admin)):
